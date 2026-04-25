@@ -336,7 +336,7 @@ namespace {
 auto EventInstancer::InstanceEventListener(const Rml::String &value, Rml::Element * /*element*/) -> Rml::EventListener * { return new Event(value); }
 
 AppUi::AppUi(daxa::Device device)
-    : app_window(device, daxa_i32vec2{800, 450 + 22 + 2 + 189 + 2}),
+    : app_window(device, daxa_i32vec2{800 + 760, 450 + 22 + 2 + 189 + 2}),
       render_interface(device, app_window.swapchain.get_format()) {
 
     assert(s_instance == nullptr);

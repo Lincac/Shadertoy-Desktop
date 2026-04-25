@@ -24,6 +24,7 @@
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/ssl/stream.hpp>
 
+#include <cmath>
 #include <iostream>
 #include <format>
 using Clock = std::chrono::high_resolution_clock;
@@ -46,6 +47,9 @@ struct ShaderApp {
     daxa::TaskImage task_swapchain_image;
 
     Viewport viewport;
+
+    /// Last RML client size used to decide task graph re-record; x < 0 means not yet recorded.
+    daxa_f32vec2 recorded_viewport_client{-1.f, -1.f};
 
     ShaderApp();
     ~ShaderApp();
@@ -318,6 +322,18 @@ ShaderApp::ShaderApp()
         }
         ui.rml_context->Update();
         main_task_graph = record_main_task_graph();
+        {
+            auto const wr = ui.viewport_element->GetClientWidth();
+            auto const hr = ui.viewport_element->GetClientHeight();
+            if (wr >= 1.f && hr >= 1.f) {
+                recorded_viewport_client = {wr, hr};
+            } else {
+                recorded_viewport_client = {
+                    viewport.gpu_input.Resolution.x,
+                    viewport.gpu_input.Resolution.y,
+                };
+            }
+        }
         render();
     };
     ui.app_window.on_drop = [&](std::span<char const *> paths) {
@@ -335,7 +351,20 @@ ShaderApp::ShaderApp()
 
     ui.on_toggle_fullscreen = [&](bool is_fullscreen) {
         ui.app_window.set_fullscreen(is_fullscreen);
+        ui.rml_context->Update();
         main_task_graph = record_main_task_graph();
+        {
+            auto const wr = ui.viewport_element->GetClientWidth();
+            auto const hr = ui.viewport_element->GetClientHeight();
+            if (wr >= 1.f && hr >= 1.f) {
+                recorded_viewport_client = {wr, hr};
+            } else {
+                recorded_viewport_client = {
+                    viewport.gpu_input.Resolution.x,
+                    viewport.gpu_input.Resolution.y,
+                };
+            }
+        }
     };
 
     ui.on_download = [&](Rml::String const &rml_input) {
@@ -364,17 +393,43 @@ void ShaderApp::render() {
     if (app_window.size.x <= 0 || app_window.size.y <= 0) {
         return;
     }
+    ui.rml_context->Update();
+
+    bool const shader_reload = ui.buffer_panel.dirty;
+    if (shader_reload) {
+        viewport.load_shadertoy_json(ui.buffer_panel.get_shadertoy_json());
+        ui.rml_context->Update();
+        ui.buffer_panel.dirty = false;
+    }
+
+    auto const cur_rml_vp = daxa_f32vec2{
+        ui.viewport_element->GetClientWidth(),
+        ui.viewport_element->GetClientHeight(),
+    };
+    bool const rml_vp_ready = cur_rml_vp.x >= 1.f && cur_rml_vp.y >= 1.f;
+    bool const recorded_valid = recorded_viewport_client.x >= 0.f;
+    bool const need_record =
+        shader_reload ||
+        !recorded_valid ||
+        (rml_vp_ready && (std::abs(cur_rml_vp.x - recorded_viewport_client.x) > 0.5f ||
+                          std::abs(cur_rml_vp.y - recorded_viewport_client.y) > 0.5f));
+    if (need_record) {
+        main_task_graph = record_main_task_graph();
+        if (rml_vp_ready) {
+            recorded_viewport_client = cur_rml_vp;
+        } else {
+            recorded_viewport_client = {
+                viewport.gpu_input.Resolution.x,
+                viewport.gpu_input.Resolution.y,
+            };
+        }
+    }
+
     auto const swapchain_image = app_window.swapchain.acquire_next_image();
     if (swapchain_image.is_empty()) {
         return;
     }
     task_swapchain_image.set_images({.images = {&swapchain_image, 1}});
-
-    if (ui.buffer_panel.dirty) {
-        viewport.load_shadertoy_json(ui.buffer_panel.get_shadertoy_json());
-        main_task_graph = record_main_task_graph();
-        ui.buffer_panel.dirty = false;
-    }
 
     viewport.render();
 
@@ -417,6 +472,34 @@ auto ShaderApp::record_main_task_graph() -> daxa::TaskGraph {
             static_cast<daxa_f32>(ui.app_window.size.x),
             static_cast<daxa_f32>(ui.app_window.size.y),
         };
+    } else if (viewport_size.x < 1.f || viewport_size.y < 1.f) {
+        auto const win_w = static_cast<float>(ui.app_window.size.x);
+        auto const win_h = static_cast<float>(ui.app_window.size.y);
+        auto *doc = ui.viewport_element->GetOwnerDocument();
+        if (doc != nullptr) {
+            auto *mc = doc->GetElementById("main_column");
+            auto *bp = doc->GetElementById("buffer_panel");
+            auto const mc_w = mc ? mc->GetClientWidth() : 0.f;
+            auto const mc_h = mc ? mc->GetClientHeight() : 0.f;
+            auto const bp_w = bp ? bp->GetClientWidth() : 0.f;
+            if (viewport_size.x < 1.f) {
+                if (mc_w >= 1.f) {
+                    viewport_size.x = mc_w;
+                } else if (bp_w >= 1.f) {
+                    viewport_size.x = (std::max)(1.f, win_w - bp_w);
+                } else {
+                    viewport_size.x = (std::max)(1.f, win_w * 0.5f);
+                }
+            }
+            if (viewport_size.y < 1.f) {
+                constexpr float k_bottom_bar = 30.f;
+                if (mc_h >= 1.f + k_bottom_bar) {
+                    viewport_size.y = (std::max)(1.f, mc_h - k_bottom_bar);
+                } else {
+                    viewport_size.y = (std::max)(1.f, win_h - k_bottom_bar);
+                }
+            }
+        }
     }
     viewport.gpu_input.Resolution = daxa_f32vec3{
         static_cast<daxa_f32>(viewport_size.x),
@@ -465,7 +548,12 @@ auto ShaderApp::record_main_task_graph() -> daxa::TaskGraph {
         },
         .task = [viewport_render_image, viewport_size, this](daxa::TaskInterface const &ti) {
             auto &recorder = ti.recorder;
-            auto image_size = ti.device.image_info(ti.get(viewport_render_image).ids[0]).value().size;
+            auto const image_size = ti.device.image_info(ti.get(viewport_render_image).ids[0]).value().size;
+            auto const sw = static_cast<int32_t>(image_size.x);
+            auto const sh = static_cast<int32_t>(image_size.y);
+            if (sw <= 0 || sh <= 0) {
+                return;
+            }
             auto viewport_pos0 = daxa_f32vec2{
                 ui.viewport_element->GetAbsoluteLeft() + ui.viewport_element->GetClientLeft(),
                 ui.viewport_element->GetAbsoluteTop() + ui.viewport_element->GetClientTop(),
@@ -476,7 +564,7 @@ auto ShaderApp::record_main_task_graph() -> daxa::TaskGraph {
                 .src_image_layout = ti.get(viewport_render_image).layout,
                 .dst_image = ti.get(task_swapchain_image).ids[0],
                 .dst_image_layout = ti.get(task_swapchain_image).layout,
-                .src_offsets = {{{static_cast<int32_t>(viewport_pos0.x), static_cast<int32_t>(viewport_pos1.y), 0}, {static_cast<int32_t>(viewport_pos1.x), static_cast<int32_t>(viewport_pos0.y), 1}}},
+                .src_offsets = {{{0, sh, 0}, {sw, 0, 1}}},
                 .dst_offsets = {{{static_cast<int32_t>(viewport_pos0.x), static_cast<int32_t>(viewport_pos0.y), 0}, {static_cast<int32_t>(viewport_pos1.x), static_cast<int32_t>(viewport_pos1.y), 1}}},
                 .filter = daxa::Filter::LINEAR,
             });
