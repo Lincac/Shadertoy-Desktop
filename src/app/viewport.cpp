@@ -1,5 +1,3 @@
-#define DAXA_REMOVE_DEPRECATED 0
-
 #include <app/viewport.hpp>
 #include <app/resources.hpp>
 
@@ -9,6 +7,7 @@
 #include <stb_image.h>
 
 #include <unordered_map>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <random>
@@ -191,7 +190,7 @@ Viewport::Viewport(daxa::Device a_daxa_device)
           auto result = daxa::PipelineManager(
               daxa::PipelineManagerInfo2{
                   .device = daxa_device,
-                  .root_paths = {DAXA_SHADER_INCLUDE_DIR, "src"},
+                  .root_paths = {DAXA_SHADER_INCLUDE_DIR, "src", resource_dir / std::filesystem::path("src")},
                   // .write_out_spirv = ".out/spv",
                   .register_null_pipelines_when_first_compile_fails = true,
                   .custom_preprocessor = shader_preprocess,
@@ -498,7 +497,6 @@ auto Viewport::record(daxa::TaskGraph &task_graph) -> daxa::TaskImageView {
                         daxa::inl_attachment(daxa::TaskImageAccess::TRANSFER_WRITE, daxa::ImageViewType::REGULAR_2D, output_view.view({.base_mip_level = mip + 1})),
                     },
                     .task = [mip](daxa::TaskInterface ti) {
-                        auto &recorder = ti.recorder;
                         do_blit(ti, ti.get(daxa::TaskImageAttachmentIndex{0}).ids[0], ti.get(daxa::TaskImageAttachmentIndex{1}).ids[0], mip);
                     },
                     .name = std::string("mip map ") + std::to_string(mip),
@@ -738,13 +736,15 @@ auto Viewport::load_texture(std::string path) -> std::pair<daxa::ImageId, size_t
         // check if the file exists at all, allowing people to load a file to binary data
         auto file = std::ifstream{path, std::ios::binary};
         if (file.good()) {
-            auto size = std::filesystem::file_size(path);
+            auto byte_size = std::filesystem::file_size(path);
             pixel_size_bytes = 16;
-            size = (size + pixel_size_bytes - 1) & ~(pixel_size_bytes - 1);
-            size_x = std::min<int>(size / pixel_size_bytes, 1024);
-            size_y = (size / pixel_size_bytes + 1023) / 1024;
-            heap_data = new stbi_uc[size_x * size_y * pixel_size_bytes];
-            file.read(reinterpret_cast<char *>(heap_data), static_cast<std::streamsize>(size));
+            auto const psz = static_cast<std::uintmax_t>(pixel_size_bytes);
+            byte_size = (byte_size + psz - 1) & ~(psz - 1);
+            auto const total_pixels = static_cast<std::uintmax_t>(byte_size / psz);
+            size_x = static_cast<int32_t>(std::min(total_pixels, std::uintmax_t{1024}));
+            size_y = static_cast<int32_t>((total_pixels + 1023) / 1024);
+            heap_data = new stbi_uc[static_cast<size_t>(size_x) * static_cast<size_t>(size_y) * static_cast<size_t>(pixel_size_bytes)];
+            file.read(reinterpret_cast<char *>(heap_data), static_cast<std::streamsize>(byte_size));
             temp_data = heap_data;
             temp_format = daxa::Format::R32G32B32A32_UINT;
         } else {
@@ -832,8 +832,8 @@ auto Viewport::load_cube_texture(std::string path) -> std::pair<daxa::ImageId, s
     for (uint32_t i = 1; i < 6; ++i) {
         auto temp_path = std::filesystem::path(path);
         auto new_path = temp_path.parent_path() / std::filesystem::path(temp_path.stem().string() + "_" + std::to_string(i) + temp_path.extension().string());
-        auto *temp_data = stbi_load(new_path.string().c_str(), &size_x, &size_y, &channel_n, 4);
-        loaded_buffers.push_back(temp_data);
+        auto *face_pixels = stbi_load(new_path.string().c_str(), &size_x, &size_y, &channel_n, 4);
+        loaded_buffers.push_back(face_pixels);
     }
     for (uint32_t i = 0; i < 6; ++i) {
         temp_task_graph.add_task({
@@ -1008,10 +1008,8 @@ void Viewport::load_shadertoy_json(nlohmann::json json) {
     for (auto &renderpass : renderpasses) {
         ++pass_i;
         auto &code = renderpass["code"];
-        auto &description = renderpass["description"];
         auto &inputs = renderpass["inputs"];
         auto &name = renderpass["name"];
-        auto &outputs = renderpass["outputs"];
         auto &pass_type = renderpass["type"];
         auto pipeline_name = std::string{name};
         // Skip unknown pass type
@@ -1181,20 +1179,14 @@ void Viewport::load_shadertoy_json(nlohmann::json json) {
         extra_defines.push_back({.name = "_DESKTOP_SHADERTOY_USER_PASS" + std::to_string(pass_i), .value = "1"});
 
         const auto shader_include_dir = resource_dir / std::filesystem::path("src");
-        auto compile_result = pipeline_manager.add_raster_pipeline({
-            .vertex_shader_info = daxa::ShaderCompileInfo{
+        auto compile_result = pipeline_manager.add_raster_pipeline2({
+            .vertex_shader_info = daxa::ShaderCompileInfo2{
                 .source = daxa::ShaderFile{shader_include_dir / "app/viewport.glsl"},
-                .compile_options{
-                    .root_paths = {shader_include_dir},
-                    .defines = extra_defines,
-                },
+                .defines = extra_defines,
             },
-            .fragment_shader_info = daxa::ShaderCompileInfo{
+            .fragment_shader_info = daxa::ShaderCompileInfo2{
                 .source = daxa::ShaderFile{shader_include_dir / "app/viewport.glsl"},
-                .compile_options{
-                    .root_paths = {shader_include_dir},
-                    .defines = extra_defines,
-                },
+                .defines = extra_defines,
             },
             .color_attachments = {{
                 .format = pass_format,

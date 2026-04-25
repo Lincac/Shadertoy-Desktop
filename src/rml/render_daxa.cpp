@@ -1,5 +1,3 @@
-#define DAXA_REMOVE_DEPRECATED 0
-
 #include <app/resources.hpp>
 
 #include <RmlUi/Core/Types.h>
@@ -78,8 +76,8 @@ RenderInterface_Daxa::RenderInterface_Daxa(daxa::Device device, daxa::Format for
             .default_language = daxa::ShaderLanguage::GLSL,
             .name = "pipeline_manager",
         });
-    auto compile_result = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo{
-        .vertex_shader_info = daxa::ShaderCompileInfo{
+    auto compile_result = pipeline_manager.add_raster_pipeline2({
+        .vertex_shader_info = daxa::ShaderCompileInfo2{
             .source = daxa::ShaderCode{std::string{SHADER_COMMON} + R"glsl(
                 layout(location = 0) out struct {
                     daxa_f32vec4 Color;
@@ -104,12 +102,10 @@ RenderInterface_Daxa::RenderInterface_Daxa(daxa::Device device, daxa::Format for
                     gl_Position.z += 0.5;
                 }
             )glsl"},
-            .compile_options = {
-                .language = daxa::ShaderLanguage::GLSL,
-                .enable_debug_info = true,
-            },
+            .language = daxa::ShaderLanguage::GLSL,
+            .enable_debug_info = true,
         },
-        .fragment_shader_info = daxa::ShaderCompileInfo{
+        .fragment_shader_info = daxa::ShaderCompileInfo2{
             .source = daxa::ShaderCode{std::string{SHADER_COMMON} + R"glsl(
                 layout(location = 0) out daxa_f32vec4 fColor;
                 layout(location = 0) in struct {
@@ -121,10 +117,8 @@ RenderInterface_Daxa::RenderInterface_Daxa(daxa::Device device, daxa::Format for
                     fColor = linear_to_srgb(In.Color.rgba * tex_color);
                 }
             )glsl"},
-            .compile_options = daxa::ShaderCompileOptions{
-                .language = daxa::ShaderLanguage::GLSL,
-                .enable_debug_info = true,
-            },
+            .language = daxa::ShaderLanguage::GLSL,
+            .enable_debug_info = true,
         },
         .color_attachments = {{
             .format = format,
@@ -182,6 +176,7 @@ void RenderInterface_Daxa::recreate_ibuffer(size_t ibuffer_new_size) {
 
 void RenderInterface_Daxa::begin_frame(daxa::ImageId target_image, daxa::CommandRecorder &recorder) {
     using namespace std::literals;
+    (void)recorder;
 
     auto target_image_extent = device.image_info(target_image).value().size;
 
@@ -402,15 +397,15 @@ void RenderInterface_Daxa::RenderCompiledGeometry(Rml::CompiledGeometryHandle ha
     auto &draw = draws.at(handle - 1);
     draw.translation = translation;
     auto num_vertices = draw.vertices.size();
-    draw.vertex_offset = vertex_cache_offset;
-    auto necessary_size = draw.vertex_offset + num_vertices;
+    draw.vertex_offset = static_cast<uint32_t>(vertex_cache_offset);
+    auto necessary_size = static_cast<size_t>(draw.vertex_offset) + num_vertices;
     if (vertex_cache.size() < necessary_size) {
         vertex_cache.resize(necessary_size);
     }
     std::copy(draw.vertices.begin(), draw.vertices.end(), vertex_cache.begin() + draw.vertex_offset);
     auto num_indices = draw.indices.size();
-    draw.index_offset = index_cache_offset;
-    auto index_necessary_size = draw.index_offset + num_indices;
+    draw.index_offset = static_cast<uint32_t>(index_cache_offset);
+    auto index_necessary_size = static_cast<size_t>(draw.index_offset) + num_indices;
     if (index_cache.size() < index_necessary_size) {
         index_cache.resize(index_necessary_size);
     }

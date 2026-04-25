@@ -88,7 +88,7 @@ namespace {
         settings_window_element->AddEventListener(Rml::EventId::Blur, &settings_window_event_listener);
     }
 
-    void settings_window_process_event(Rml::Event &event, Rml::String const &value) {
+    void settings_window_process_event([[maybe_unused]] Rml::Event &event, Rml::String const &value) {
         if (value == "settings_window_open") {
             auto const display_prop = settings_window_element->GetProperty("display")->ToString();
             if (display_prop == "block") {
@@ -132,7 +132,7 @@ namespace {
         fps_element->SetInnerRML(fps_str);
     }
 
-    void bottom_bar_process_event(Rml::Event &event, Rml::String const &value) {
+    void bottom_bar_process_event([[maybe_unused]] Rml::Event &event, Rml::String const &value) {
         if (value == "bottom_bar_reset") {
             AppUi::s_instance->on_reset();
         } else if (value == "bottom_bar_pause") {

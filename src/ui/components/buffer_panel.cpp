@@ -119,9 +119,9 @@ namespace {
 
     class UpdateListener : public efsw::FileWatchListener {
       public:
-        void handleFileAction(efsw::WatchID watchid, const std::string &dir,
+        void handleFileAction([[maybe_unused]] efsw::WatchID watchid, [[maybe_unused]] const std::string &dir,
                               const std::string &filename, efsw::Action action,
-                              std::string oldFilename) override {
+                              [[maybe_unused]] std::string oldFilename) override {
 
             if (action != efsw::Actions::Modified) {
                 // we don't care about anything except modifications
@@ -176,7 +176,7 @@ BufferPanel::~BufferPanel() {
     cleanup();
 }
 
-void BufferPanel::load(Rml::Context *rml_context, Rml::ElementDocument *document) {
+void BufferPanel::load([[maybe_unused]] Rml::Context *rml_context, Rml::ElementDocument *document) {
     base_element = document->GetElementById("buffer_panel");
     base_element->AddEventListener(Rml::EventId::Mousedown, &buffer_panel_event_listener);
     base_element->AddEventListener(Rml::EventId::Mouseup, &buffer_panel_event_listener);
@@ -586,9 +586,6 @@ void BufferPanel::buffer_panel_tab_close(Rml::Event &event) {
     reload_json();
 }
 void BufferPanel::buffer_panel_tab_edit(Rml::Event &event) {
-    auto &renderpasses = json["renderpass"];
-
-    auto new_pass = nlohmann::json{};
     auto *element = event.GetCurrentElement();
     auto *parent = element->GetParentNode();
     auto *content_div = parent->GetChild(1);
@@ -656,7 +653,6 @@ void BufferPanel::buffer_panel_tab_edit(Rml::Event &event) {
         file.close();
 
         *edit_state_ptr = new BufferFileEditState{.name = name, .path = path};
-        auto &edit_state = **edit_state_ptr;
     }
     auto &edit_state = **edit_state_ptr;
 
@@ -806,9 +802,6 @@ void BufferPanel::reload_json() {
     }
 
     for (auto &renderpass : renderpasses) {
-        auto &type = renderpass["type"];
-        auto &outputs = renderpass["outputs"];
-
         auto name = std::string{renderpass["name"]};
 
         tabs_element->SetTab(tab_index, fmt::format("<template src=\"buffer_tab\">{}</template>", name));
@@ -865,11 +858,11 @@ void BufferPanel::reload_json() {
                         }
                         replace_all(path, "/media/a/", "media/images/");
 
-                        auto type = std::string{};
+                        auto input_type = std::string{};
                         if (input.contains("type")) {
-                            type = input["type"];
+                            input_type = input["type"];
                         } else if (input.contains("ctype")) {
-                            type = input["ctype"];
+                            input_type = input["ctype"];
                         } else {
                             // ?
                             continue;
@@ -878,10 +871,10 @@ void BufferPanel::reload_json() {
                         if (std::filesystem::exists(path)) {
                             ichannel_img->SetAttribute("src", fmt::format("../../{}", path));
                             has_input = true;
-                        } else if (type == "keyboard") {
+                        } else if (input_type == "keyboard") {
                             ichannel_img->SetAttribute("src", "../../media/icons/keyboard.png");
                             has_input = true;
-                        } else if (type == "buffer") {
+                        } else if (input_type == "buffer") {
                             auto buffer_index = 0;
                             for (auto &input_renderpass : renderpasses) {
                                 if (input_renderpass["type"] == "buffer") {
@@ -894,7 +887,7 @@ void BufferPanel::reload_json() {
 
                             ichannel_img->SetAttribute("src", fmt::format("../../media/icons/buffer0{}.png", buffer_index));
                             has_input = true;
-                        } else if (type == "cubemap") {
+                        } else if (input_type == "cubemap") {
                             ichannel_img->SetAttribute("src", "../../media/icons/cubemap00.png");
                             has_input = true;
                         }

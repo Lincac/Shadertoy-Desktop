@@ -15,6 +15,10 @@ add_executable(${PROJECT_NAME}
     "src/rml/system_glfw.cpp"
 )
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE _WIN32_WINNT=0x0601)
+endif()
 
 find_package(glfw3 CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)

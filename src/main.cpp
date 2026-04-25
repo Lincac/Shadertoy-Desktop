@@ -15,6 +15,10 @@
 
 #include <fstream>
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
@@ -23,6 +27,9 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/ssl/stream.hpp>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 #include <cmath>
 #include <iostream>
