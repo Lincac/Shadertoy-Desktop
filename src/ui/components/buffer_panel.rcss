@@ -148,15 +148,38 @@ panel {
     overflow-x: hidden;
 }
 
-.shader_input_pre {
+.shader_input_list {
     display: block;
     margin: 0;
     padding: 0;
+}
+
+.shader_input_line {
+    display: block;
     font-size: 11dp;
     font-family: LatoLatin;
     font-weight: normal;
-    white-space: pre;
     color: #1a1a1a;
+    margin: 0 0 2dp 0;
+    white-space: nowrap;
+}
+
+.shader_input_type {
+    display: inline-block;
+    width: 172dp;
+    vertical-align: top;
+}
+
+.shader_input_id {
+    display: inline-block;
+    width: 228dp;
+    vertical-align: top;
+}
+
+.shader_input_comment {
+    display: inline-block;
+    vertical-align: top;
+    white-space: nowrap;
 }
 
 #ichannel {
