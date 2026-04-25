@@ -685,17 +685,25 @@ void BufferPanel::buffer_panel_shader_input_toggle(Rml::Event &event) {
         return;
     }
     Rml::Element *body = wrap->GetChild(1);
-    Rml::Element *chevron = header->GetChild(0);
+    Rml::Element *chevron = nullptr;
+    if (auto *first = header->GetChild(0); first != nullptr) {
+        if (first->GetClassNames().find("shader_input_chevron_cell") != Rml::String::npos &&
+            first->GetNumChildren() > 0) {
+            chevron = first->GetChild(0);
+        } else if (first->GetClassNames().find("shader_input_chevron") != Rml::String::npos) {
+            chevron = first;
+        }
+    }
     if (chevron == nullptr) {
         return;
     }
     auto const display = body->GetProperty("display")->ToString();
     if (display == "none") {
         body->SetProperty("display", "block");
-        chevron->SetInnerRML("\xE2\x96\xBC"); // U+25BC
+        chevron->SetAttribute("class", "shader_input_chevron shader_input_chevron_expanded");
     } else {
         body->SetProperty("display", "none");
-        chevron->SetInnerRML("\xE2\x96\xB2"); // U+25B2
+        chevron->SetAttribute("class", "shader_input_chevron shader_input_chevron_collapsed");
     }
 }
 
