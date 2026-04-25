@@ -223,6 +223,8 @@ void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
         buffer_panel_tab_close(event);
     } else if (value == "buffer_panel_tab_edit") {
         buffer_panel_tab_edit(event);
+    } else if (value == "buffer_panel_shader_input_toggle") {
+        buffer_panel_shader_input_toggle(event);
     }
 }
 
@@ -665,6 +667,38 @@ void BufferPanel::buffer_panel_tab_edit(Rml::Event &event) {
 #endif
 }
 
+void BufferPanel::buffer_panel_shader_input_toggle(Rml::Event &event) {
+    Rml::Element *node = event.GetCurrentElement();
+    Rml::Element *header = nullptr;
+    while (node != nullptr) {
+        if (node->GetClassNames().find("shader_input_header") != Rml::String::npos) {
+            header = node;
+            break;
+        }
+        node = node->GetParentNode();
+    }
+    if (header == nullptr) {
+        return;
+    }
+    Rml::Element *wrap = header->GetParentNode();
+    if (wrap == nullptr || wrap->GetNumChildren() < 2) {
+        return;
+    }
+    Rml::Element *body = wrap->GetChild(1);
+    Rml::Element *chevron = header->GetChild(0);
+    if (chevron == nullptr) {
+        return;
+    }
+    auto const display = body->GetProperty("display")->ToString();
+    if (display == "none") {
+        body->SetProperty("display", "block");
+        chevron->SetInnerRML("\xE2\x96\xBC"); // U+25BC
+    } else {
+        body->SetProperty("display", "none");
+        chevron->SetInnerRML("\xE2\x96\xB2"); // U+25B2
+    }
+}
+
 void BufferPanel::cleanup() {
     delete common_file_edit_state;
     delete buffer00_file_edit_state;
@@ -777,7 +811,20 @@ void BufferPanel::reload_json() {
 
         auto *panels = tabs_element->GetChild(1);
         auto *panel = panels->GetChild(tab_index);
-        auto *datagrid = panel->GetChild(0);
+        Rml::Element *datagrid = nullptr;
+        for (int pi = 0; pi < panel->GetNumChildren(); ++pi) {
+            auto *panel_child = panel->GetChild(pi);
+            if (panel_child != nullptr && panel_child->GetTagName() == "datagrid") {
+                datagrid = panel_child;
+                break;
+            }
+        }
+        if (datagrid == nullptr && panel->GetNumChildren() > 1) {
+            datagrid = panel->GetChild(1);
+        }
+        if (datagrid == nullptr) {
+            datagrid = panel->GetChild(0);
+        }
         auto *datagrid_header = datagrid->GetChild(0);
 
         auto &inputs = renderpass["inputs"];

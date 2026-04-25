@@ -56,4 +56,5 @@ struct BufferPanel {
     void buffer_panel_add_option(Rml::Event &event);
     void buffer_panel_tab_close(Rml::Event &event);
     void buffer_panel_tab_edit(Rml::Event &event);
+    void buffer_panel_shader_input_toggle(Rml::Event &event);
 };

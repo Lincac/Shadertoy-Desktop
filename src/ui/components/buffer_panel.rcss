@@ -70,6 +70,57 @@ panel {
     box-sizing: border-box;
 }
 
+.shader_input_wrap {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 4dp;
+}
+
+.shader_input_header {
+    display: block;
+    cursor: pointer;
+    padding: 4dp 6dp;
+    background-color: #c4c4c4;
+    border: 1dp #a8a8a8;
+    font-size: 14dp;
+    line-height: 18dp;
+}
+
+.shader_input_header:hover {
+    background-color: #b8b8b8;
+}
+
+.shader_input_chevron {
+    display: inline-block;
+    width: 18dp;
+    margin-right: 4dp;
+    text-align: center;
+}
+
+.shader_input_body {
+    display: block;
+    border-left: 1dp #a8a8a8;
+    border-right: 1dp #a8a8a8;
+    border-bottom: 1dp #a8a8a8;
+    background-color: #e8e8e8;
+    padding: 6dp;
+    max-height: 220dp;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.shader_input_pre {
+    display: block;
+    margin: 0;
+    padding: 0;
+    font-size: 11dp;
+    font-family: LatoLatin;
+    font-weight: normal;
+    white-space: pre;
+    color: #1a1a1a;
+}
+
 #ichannel {
     text-align: center;
     background-color: #000000;
