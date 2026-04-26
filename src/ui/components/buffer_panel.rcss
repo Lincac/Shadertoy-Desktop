@@ -60,6 +60,8 @@
     flex: 0 0 auto;
     width: 100%;
     box-sizing: border-box;
+    /* 消除 inline-block tab 行盒底部空隙，否则与下方 panel 橙边之间会露出一条灰缝 */
+    line-height: 0;
 }
 
 /* 其它 tabset（如 #bpiw_tabs）保持块级流式，避免继承侧栏 flex */
@@ -85,23 +87,27 @@ tabs {
     vertical-align: top;
 }
 
+/* 固定宽度：避免 RmlUi 下 table-cell 脱离 table 导致不排版、文字消失 */
 tab {
-    margin-top: 3dp;
-    margin-left: 3dp;
-    margin-right: 3dp;
+    margin-top: 2dp;
+    margin-left: 2dp;
+    margin-right: 2dp;
     margin-bottom: 0;
-    width: 92dp;
-    padding: 0 5dp;
-    line-height: 20dp;
+    width: 112dp;
+    min-width: 112dp;
+    max-width: 112dp;
+    padding: 0 2dp;
+    line-height: 17dp;
     display: inline-block;
-    vertical-align: top;
-    border-top: 4dp;
-    border-bottom: 4dp;
+    vertical-align: bottom;
+    box-sizing: border-box;
+    border-top: 3dp;
+    border-bottom: 3dp;
     border-radius: 0dp;
     border-bottom-color: #F8B030;
     border-top-color: #808080;
 
-    font-size: 15dp;
+    font-size: 13dp;
     color: #ffffff;
     background-color: #808080;
     text-align: center;
@@ -140,23 +146,36 @@ body.buffer_panel {
     overflow: hidden;
 }
 
-/* RmlUi：flex 容器内不能再套 display:flex 子节点；此处用 block + 子元素 height:100% 撑满中间栏 */
+/* 中间栏：绝对定位只用在 ta_cell 上，textarea 保持常规块级（避免 RmlUi 下 textarea 绝对定位高度为 0） */
 .buffer_pass_code_editor_wrap {
+    position: relative;
     display: block;
     flex: 1 1 auto;
-    min-height: 72dp;
+    min-height: 100dp;
     width: 100%;
     box-sizing: border-box;
     padding: 4dp 0;
     overflow: hidden;
 }
 
+.buffer_pass_code_editor_ta_cell {
+    position: absolute;
+    top: 4dp;
+    left: 0;
+    right: 0;
+    bottom: 30dp;
+    display: block;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
 textarea.buffer_pass_code_editor {
-    min-height: 48dp;
+    position: relative;
+    display: block;
     width: 100%;
     height: 100%;
+    min-height: 48dp;
     box-sizing: border-box;
-    display: block;
     font-size: 11dp;
     font-weight: normal;
     font-family: monospace;
@@ -168,10 +187,135 @@ textarea.buffer_pass_code_editor {
     tab-index: auto;
 }
 
+.buffer_pass_code_toolbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 28dp;
+    box-sizing: border-box;
+    display: block;
+    background-color: #c8c8c8;
+    border: 1dp #a8a8a8;
+    border-top: 0dp;
+    padding: 2dp 4dp;
+}
+
+.buffer_pass_code_compile_btn {
+    position: relative;
+    z-index: 1;
+    display: inline-block;
+    vertical-align: middle;
+    min-width: 22dp;
+    height: 22dp;
+    padding: 0;
+    margin: 0;
+    font-size: 14dp;
+    line-height: 22dp;
+    text-align: center;
+    cursor: pointer;
+    color: #111111;
+    background-color: transparent;
+    border: 0dp;
+}
+
+.buffer_pass_code_compile_btn:hover {
+    color: #000000;
+    background-color: transparent;
+}
+
+.buffer_pass_code_stats {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 36dp;
+    text-align: center;
+    line-height: 24dp;
+    font-size: 11dp;
+    font-weight: normal;
+    color: #333333;
+    pointer-events: none;
+}
+
+body.buffer_tab {
+    display: block;
+    width: 100%;
+    min-height: 22dp;
+    box-sizing: border-box;
+    padding: 1dp 1dp;
+}
+
+/* 块级 + 右侧绝对定位关闭键，不再使用 table-cell */
+.buffer_tab_row {
+    display: block;
+    position: relative;
+    width: 100%;
+    min-height: 20dp;
+    box-sizing: border-box;
+    padding: 0 20dp 0 1dp;
+    text-align: center;
+}
+
+.buffer_tab_row #content {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-align: center;
+    line-height: 18dp;
+    font-size: 12dp;
+}
+
+.buffer_tab_row > button {
+    position: absolute;
+    right: 1dp;
+    top: 1dp;
+    display: block;
+}
+
+/* Image 标签：占位第二个子节点以匹配 .buffer_tab_row 排版，不占位、不可点 */
+.buffer_tab_image_no_close {
+    display: none;
+}
+
 datagrid.buffer_panel_channels_grid {
     flex: 0 0 auto;
     width: 100%;
     box-sizing: border-box;
+    margin-top: 4dp;
+}
+
+/* 表格布局里 margin-right 常无效：用后续列 margin-left 拉出列间空白；末列 padding-right 留右缘细缝 */
+.buffer_ch_col .ichannel,
+.buffer_ch_col .ichannel_img,
+.buffer_ch_col .ichannel_sampler_menu {
+    width: 179dp;
+}
+
+col.buffer_ch_col_last .ichannel,
+col.buffer_ch_col_last .ichannel_img,
+col.buffer_ch_col_last .ichannel_sampler_menu {
+    width: 179dp;
+    box-sizing: border-box;
+    padding-right: 6dp;
+}
+
+/* datagrid 列间：RmlUi 不支持 border-collapse/spacing；用列 padding-left 挤出灰色空隙 */
+col.buffer_ch_gap {
+    padding-left: 12dp;
+    box-sizing: border-box;
+}
+
+datagrid.buffer_panel_channels_grid col.buffer_ch_col #ichannel_label {
+    width: 179dp;
+    max-width: none;
+}
+
+datagrid.buffer_panel_channels_grid col.buffer_ch_col_last #ichannel_label {
+    width: 179dp;
+    max-width: none;
 }
 
 .shader_input_wrap {
@@ -297,8 +441,8 @@ datagrid.buffer_panel_channels_grid {
     background-color: #ffffff;
     text-align: left;
     padding: 4dp;
-    width: 172dp;
     height: 15dp;
+    box-sizing: border-box;
 }
 
 .ichannel_settings {
@@ -328,20 +472,23 @@ datagrid.buffer_panel_channels_grid {
 }
 
 .ichannel {
-    width: 180dp;
+    width: 179dp;
     height: 128dp;
+    box-sizing: border-box;
 }
 
 .ichannel_sampler_menu {
     background-color: #ffffff;
-    width: 180dp;
+    width: 179dp;
     height: 128dp;
+    box-sizing: border-box;
 }
 
 .ichannel_img {
-    width: 180dp;
+    width: 179dp;
     height: 128dp;
     background-color: #000000;
+    box-sizing: border-box;
 }
 
 .filter {
@@ -364,35 +511,21 @@ datagrid.buffer_panel_channels_grid {
     background-color: #a1a1a1;
 }
 
-#buffer_edit:hover {
-    top: 0dp;
-    margin-left: -1dp;
-    margin-right: -1dp;
-    border: 1dp white;
-}
-
-#buffer_edit {
-    position: absolute;
-    top: 1dp;
-    left: 2dp;
-}
-
 #buffer_close:hover {
-    top: 0dp;
     margin-left: -1dp;
     margin-right: -1dp;
     border: 1dp white;
 }
 
 #buffer_close {
-    position: absolute;
-    top: 1dp;
-    right: 2dp;
+    display: inline-block;
+    vertical-align: middle;
 }
 
 #buffer_add {
     position: absolute;
-    top: 4dp;
+    /* 不参与 tabs 行高；略上移避免与 panel 顶橙边叠在一起 */
+    top: 1dp;
     left: 4dp;
     width: 24dp;
     height: 24dp;

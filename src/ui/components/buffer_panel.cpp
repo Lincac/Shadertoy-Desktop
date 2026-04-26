@@ -148,6 +148,45 @@ namespace {
         return nullptr;
     }
 
+    static constexpr size_t buffer_panel_pass_code_max_chars = 100000;
+
+    auto sync_textarea_value_to_pass_json(Rml::ElementFormControlTextArea *ta) -> bool {
+        if (ta == nullptr || AppUi::s_instance == nullptr) {
+            return false;
+        }
+        auto *attr = ta->GetAttribute("data-pass");
+        if (attr == nullptr) {
+            return false;
+        }
+        auto pass_name = attr->Get<Rml::String>();
+        auto name = std::string(pass_name.data(), pass_name.size());
+        auto *pass_ptr = find_pass(name);
+        if (pass_ptr == nullptr) {
+            return false;
+        }
+        (*pass_ptr)["code"] = std::string(ta->GetValue());
+        AppUi::s_instance->buffer_panel.dirty = true;
+        return true;
+    }
+
+    void set_code_stats_for_textarea(Rml::ElementFormControlTextArea *ta) {
+        if (ta == nullptr) {
+            return;
+        }
+        /* textarea 在 .buffer_pass_code_editor_ta_cell 内，统计在并列的 toolbar 里 */
+        auto *ta_cell = ta->GetParentNode();
+        auto *wrap = ta_cell != nullptr ? ta_cell->GetParentNode() : nullptr;
+        if (wrap == nullptr) {
+            return;
+        }
+        auto *stats = find_descendant_by_class(wrap, "buffer_pass_code_stats");
+        if (stats == nullptr) {
+            return;
+        }
+        auto const n = std::string(ta->GetValue()).size();
+        stats->SetInnerRML(Rml::String(fmt::format("{}/{}", n, buffer_panel_pass_code_max_chars).c_str()));
+    }
+
     class PassCodeChangeListener : public Rml::EventListener {
       public:
         void ProcessEvent(Rml::Event &event) override {
@@ -155,24 +194,29 @@ namespace {
                 return;
             }
             auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(event.GetTargetElement());
-            if (ta == nullptr || AppUi::s_instance == nullptr) {
+            if (ta == nullptr) {
                 return;
             }
-            auto *attr = ta->GetAttribute("data-pass");
-            if (attr == nullptr) {
+            if (!sync_textarea_value_to_pass_json(ta)) {
                 return;
             }
-            auto pass_name = attr->Get<Rml::String>();
-            auto name = std::string(pass_name.data(), pass_name.size());
-            auto *pass_ptr = find_pass(name);
-            if (pass_ptr == nullptr) {
-                return;
-            }
-            (*pass_ptr)["code"] = std::string(ta->GetValue());
-            AppUi::s_instance->buffer_panel.dirty = true;
+            set_code_stats_for_textarea(ta);
         }
     };
     PassCodeChangeListener pass_code_change_listener;
+
+    class BufferPanelTabChangeListener : public Rml::EventListener {
+      public:
+        void ProcessEvent(Rml::Event &event) override {
+            if (event.GetId() != Rml::EventId::Tabchange) {
+                return;
+            }
+            if (AppUi::s_instance != nullptr) {
+                AppUi::s_instance->buffer_panel.on_tab_changed();
+            }
+        }
+    };
+    BufferPanelTabChangeListener buffer_panel_tab_change_listener;
 
     class UpdateListener : public efsw::FileWatchListener {
       public:
@@ -221,6 +265,33 @@ namespace {
         result->watch();
         return result;
     }();
+    /** tab 内结构：tab → body.buffer_tab → .buffer_tab_row → [#content, button] */
+    auto buffer_tab_row_from_tab(Rml::Element *tab) -> Rml::Element * {
+        if (tab == nullptr || tab->GetNumChildren() < 1) {
+            return nullptr;
+        }
+        auto *body = tab->GetChild(0);
+        if (body == nullptr || body->GetNumChildren() < 1) {
+            return nullptr;
+        }
+        return body->GetChild(0);
+    }
+
+    auto buffer_tab_content_div_from_tab(Rml::Element *tab) -> Rml::Element * {
+        auto *row = buffer_tab_row_from_tab(tab);
+        if (row == nullptr || row->GetNumChildren() < 1) {
+            return nullptr;
+        }
+        return row->GetChild(0);
+    }
+
+    auto buffer_tab_close_button_from_tab(Rml::Element *tab) -> Rml::Element * {
+        auto *row = buffer_tab_row_from_tab(tab);
+        if (row == nullptr || row->GetNumChildren() < 2) {
+            return nullptr;
+        }
+        return row->GetChild(1);
+    }
 } // namespace
 
 BufferFileEditState::~BufferFileEditState() {
@@ -248,6 +319,7 @@ void BufferPanel::load([[maybe_unused]] Rml::Context *rml_context, Rml::ElementD
     buffer_panel_add_panel->AddEventListener(Rml::EventId::Blur, &buffer_panel_add_options_event_listener);
 
     tabs_element = dynamic_cast<Rml::ElementTabSet *>(document->GetElementById("buffer_tabs"));
+    tabs_element->AddEventListener(Rml::EventId::Tabchange, &buffer_panel_tab_change_listener);
 }
 
 void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
@@ -257,8 +329,9 @@ void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
 
     auto *tabs = tabs_element->GetChild(0);
     auto *tab = tabs->GetChild(tabs_element->GetActiveTab());
-    auto *tab_div = tab->GetChild(1);
-    auto *tab_div_content = dynamic_cast<Rml::ElementText *>(tab_div->GetChild(0));
+    auto *tab_content_div = buffer_tab_content_div_from_tab(tab);
+    auto *tab_div_content =
+        tab_content_div != nullptr ? dynamic_cast<Rml::ElementText *>(tab_content_div->GetChild(0)) : nullptr;
 
     if (value == "buffer_panel_ichannel_settings") {
         buffer_panel_ichannel_settings(event);
@@ -278,8 +351,8 @@ void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
         buffer_panel_add_option(event);
     } else if (value == "buffer_panel_tab_close") {
         buffer_panel_tab_close(event);
-    } else if (value == "buffer_panel_tab_edit") {
-        buffer_panel_tab_edit(event);
+    } else if (value == "buffer_panel_compile_shader") {
+        buffer_panel_compile_shader(event);
     } else if (value == "buffer_panel_shader_input_toggle") {
         buffer_panel_shader_input_toggle(event);
     }
@@ -619,8 +692,12 @@ void BufferPanel::buffer_panel_tab_close(Rml::Event &event) {
     auto new_pass = nlohmann::json{};
     auto *element = event.GetCurrentElement();
     auto *parent = element->GetParentNode();
-    auto *content_div = parent->GetChild(1);
-    auto *tab_content = dynamic_cast<Rml::ElementText *>(content_div->GetChild(0));
+    auto *content_div = parent->GetChild(0);
+    auto *tab_content =
+        content_div != nullptr ? dynamic_cast<Rml::ElementText *>(content_div->GetChild(0)) : nullptr;
+    if (tab_content == nullptr) {
+        return;
+    }
 
     auto name = tab_content->GetText();
 
@@ -642,82 +719,65 @@ void BufferPanel::buffer_panel_tab_close(Rml::Event &event) {
     event.StopImmediatePropagation();
     reload_json();
 }
-void BufferPanel::buffer_panel_tab_edit(Rml::Event &event) {
-    auto *element = event.GetCurrentElement();
-    auto *parent = element->GetParentNode();
-    auto *content_div = parent->GetChild(1);
-    auto *tab_content = dynamic_cast<Rml::ElementText *>(content_div->GetChild(0));
 
-    auto name = tab_content->GetText();
+void BufferPanel::buffer_panel_compile_shader(Rml::Event &) {
+    sync_all_panel_textareas_to_json();
+    dirty = true;
+    update_active_tab_code_stats_display();
+}
 
-    auto *edit_state_ptr = (BufferFileEditState **)nullptr;
-    if (name == "Common") {
-        edit_state_ptr = &common_file_edit_state;
-    } else if (name == "Buffer A") {
-        edit_state_ptr = &buffer00_file_edit_state;
-    } else if (name == "Buffer B") {
-        edit_state_ptr = &buffer01_file_edit_state;
-    } else if (name == "Buffer C") {
-        edit_state_ptr = &buffer02_file_edit_state;
-    } else if (name == "Buffer D") {
-        edit_state_ptr = &buffer03_file_edit_state;
-    } else if (name == "Cube A") {
-        edit_state_ptr = &cubemap00_file_edit_state;
-    } else if (name == "Image") {
-        edit_state_ptr = &image_file_edit_state;
-    } else {
+void BufferPanel::on_tab_changed() {
+    if (during_shader_load) {
         return;
     }
+    sync_all_panel_textareas_to_json();
+    update_active_tab_code_stats_display();
+}
 
-    if (*edit_state_ptr != nullptr) {
-        // ensure file still exists
-        auto &edit_state = **edit_state_ptr;
-        if (!std::filesystem::exists(edit_state.path)) {
-            // if it doesn't exist anymore, then we need to destroy our state and recreate it
-            delete *edit_state_ptr;
-            *edit_state_ptr = nullptr;
-        }
+void BufferPanel::sync_all_panel_textareas_to_json() {
+    if (tabs_element == nullptr) {
+        return;
     }
-
-    if (*edit_state_ptr == nullptr) {
-        // create new file and edit state
-
-        auto new_temp_filepath = [&name]() {
-            return temp_directory / (name + "_" + random_string(6) + ".glsl");
-        };
-
-        auto path = std::filesystem::path{};
-
-        while (true) {
-            path = new_temp_filepath();
-            if (!std::filesystem::exists(path)) {
-                break;
-            }
+    auto *panels = tabs_element->GetChild(1);
+    for (int i = 0; i < panels->GetNumChildren(); ++i) {
+        auto *panel = panels->GetChild(i);
+        auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(find_descendant_by_class(panel, "buffer_pass_code_editor"));
+        if (ta == nullptr) {
+            continue;
         }
-
+        auto *attr = ta->GetAttribute("data-pass");
+        if (attr == nullptr) {
+            continue;
+        }
+        auto pass_name = attr->Get<Rml::String>();
+        auto name = std::string(pass_name.data(), pass_name.size());
         auto *pass_ptr = find_pass(name);
-        if (pass_ptr == nullptr) {
-            // This again should never happen
-            return;
+        if (pass_ptr == nullptr || !(*pass_ptr).contains("code") || !(*pass_ptr)["code"].is_string()) {
+            continue;
         }
-
         auto &pass = *pass_ptr;
-        auto content = std::string(pass["code"]);
-        replace_all(content, "\\n", "\n");
-
-        auto file = std::ofstream{path};
-        file << content;
-        file.close();
-
-        *edit_state_ptr = new BufferFileEditState{.name = name, .path = path};
+        auto new_code = std::string(ta->GetValue());
+        if (pass["code"].get<std::string>() != new_code) {
+            pass["code"] = new_code;
+            dirty = true;
+        }
     }
-    auto &edit_state = **edit_state_ptr;
+}
 
-#if _WIN32
-    std::system(fmt::format("explorer.exe {}", edit_state.path.string()).c_str());
-#else
-    std::system(fmt::format("xdg-open {}", edit_state.path.string()).c_str());
-#endif
+void BufferPanel::update_active_tab_code_stats_display() {
+    if (tabs_element == nullptr) {
+        return;
+    }
+    auto const idx = tabs_element->GetActiveTab();
+    auto *panels = tabs_element->GetChild(1);
+    if (idx < 0 || idx >= panels->GetNumChildren()) {
+        return;
+    }
+    auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(
+        find_descendant_by_class(panels->GetChild(idx), "buffer_pass_code_editor"));
+    if (ta != nullptr) {
+        set_code_stats_for_textarea(ta);
+    }
 }
 
 void BufferPanel::buffer_panel_shader_input_toggle(Rml::Event &event) {
@@ -861,11 +921,12 @@ void BufferPanel::reload_json() {
     for (auto &renderpass : renderpasses) {
         auto name = std::string{renderpass["name"]};
 
-        tabs_element->SetTab(tab_index, fmt::format("<template src=\"buffer_tab\">{}</template>", name));
+        if (name == "Image") {
+            tabs_element->SetTab(tab_index, fmt::format("<template src=\"buffer_tab_image\">{}</template>", name));
+        } else {
+            tabs_element->SetTab(tab_index, fmt::format("<template src=\"buffer_tab\">{}</template>", name));
+        }
         tabs_element->SetPanel(tab_index, "<template src=\"buffer_panel\"> </template>");
-
-        auto *tabs = tabs_element->GetChild(0);
-        auto *tab = tabs->GetChild(tab_index);
 
         auto *panels = tabs_element->GetChild(1);
         auto *panel = panels->GetChild(tab_index);
@@ -897,6 +958,7 @@ void BufferPanel::reload_json() {
                 auto code = std::string(renderpass["code"]);
                 replace_all(code, "\\n", "\n");
                 pass_code_ta->SetValue(Rml::String(code.c_str()));
+                set_code_stats_for_textarea(pass_code_ta);
             }
             for (auto channel_i = 0; channel_i < 4; ++channel_i) {
                 auto *datagrid_column = datagrid_header->GetChild(channel_i);
@@ -990,8 +1052,6 @@ void BufferPanel::reload_json() {
             }
 
             if (name == "Image") {
-                auto *tab_close_element = tab->GetChild(2);
-                tab_close_element->SetAttribute("style", "display: none;");
                 tabs_element->SetActiveTab(tab_index);
             }
         }
@@ -1001,4 +1061,5 @@ void BufferPanel::reload_json() {
 
     dirty = true;
     during_shader_load = false;
+    update_active_tab_code_stats_display();
 }

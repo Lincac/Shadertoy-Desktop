@@ -45,6 +45,9 @@ struct BufferPanel {
         return json;
     }
 
+    /** Tab 切换：把各 tab 文本框写回 JSON 并刷新当前 tab 字数统计 */
+    void on_tab_changed();
+
   private:
     void buffer_panel_ichannel_settings(Rml::Event &event);
     void buffer_panel_bpiw_close();
@@ -55,6 +58,8 @@ struct BufferPanel {
     void buffer_panel_add(Rml::Event &event);
     void buffer_panel_add_option(Rml::Event &event);
     void buffer_panel_tab_close(Rml::Event &event);
-    void buffer_panel_tab_edit(Rml::Event &event);
+    void buffer_panel_compile_shader(Rml::Event &event);
     void buffer_panel_shader_input_toggle(Rml::Event &event);
+    void sync_all_panel_textareas_to_json();
+    void update_active_tab_code_stats_display();
 };

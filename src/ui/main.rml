@@ -5,6 +5,7 @@
         <link type="text/rcss" href="main.rcss" />
         <link type="text/template" href="components/buffer_panel.rml" />
         <link type="text/template" href="components/buffer_tab.rml" />
+        <link type="text/template" href="components/buffer_tab_image.rml" />
         <link type="text/template" href="components/buffer_panel_input_window.rml" />
         <link type="text/template" href="components/settings_window.rml" />
     </head>

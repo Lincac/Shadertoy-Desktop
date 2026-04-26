@@ -5,14 +5,13 @@
     </head>
 
     <body class="buffer_tab">
-        <button onclick="buffer_panel_tab_edit">
-            <img id="buffer_edit" src="../../media/icons/edit.png"></img>
-        </button>
-        <div id="content">
+        <div class="buffer_tab_row">
+            <div id="content">
+            </div>
+            <button onclick="buffer_panel_tab_close">
+                <img id="buffer_close" src="../../media/icons/close.png"></img>
+            </button>
         </div>
-        <button onclick="buffer_panel_tab_close">
-            <img id="buffer_close" src="../../media/icons/close.png"></img>
-        </button>
     </body>
 
 </template>

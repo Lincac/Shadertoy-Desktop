@@ -52,10 +52,16 @@
             </div>
         </div>
         <div class="buffer_pass_code_editor_wrap">
-            <textarea class="buffer_pass_code_editor" rows="6" wrap="off"></textarea>
+            <div class="buffer_pass_code_editor_ta_cell">
+                <textarea class="buffer_pass_code_editor" rows="6" wrap="off"></textarea>
+            </div>
+            <div class="buffer_pass_code_toolbar">
+                <button class="buffer_pass_code_compile_btn" onclick="buffer_panel_compile_shader">▶</button>
+                <span class="buffer_pass_code_stats">0/100000</span>
+            </div>
         </div>
         <datagrid class="buffer_panel_channels_grid">
-            <col width="188dp">
+            <col class="buffer_ch_col" width="179dp">
             <div class="ichannel" id="ichannel0">
                 <img class="ichannel_img" id="ichannel0_img"></img>
                 <div class="ichannel_sampler_menu">
@@ -82,7 +88,7 @@
                 </button>
             </div>
             </col>
-            <col width="188dp">
+            <col class="buffer_ch_col buffer_ch_gap" width="179dp">
             <div class="ichannel" id="ichannel1">
                 <img class="ichannel_img" id="ichannel1_img"></img>
                 <div class="ichannel_sampler_menu">
@@ -109,7 +115,7 @@
                 </button>
             </div>
             </col>
-            <col width="188dp">
+            <col class="buffer_ch_col buffer_ch_gap" width="179dp">
             <div class="ichannel" id="ichannel2">
                 <img class="ichannel_img" id="ichannel2_img"></img>
                 <div class="ichannel_sampler_menu">
@@ -136,7 +142,7 @@
                 </button>
             </div>
             </col>
-            <col width="188dp">
+            <col class="buffer_ch_col_last buffer_ch_gap" width="179dp">
             <div class="ichannel" id="ichannel3">
                 <img class="ichannel_img" id="ichannel3_img"></img>
                 <div class="ichannel_sampler_menu">
