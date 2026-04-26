@@ -81,14 +81,18 @@
                 <img class="ichannel_close" onclick="buffer_panel_ichannel_close"
                     src="../../media/icons/close.png"></img>
             </div>
-            <div id="ichannel_label">
+            <div class="ichannel_label">
                 iChannel0
                 <button onclick="buffer_panel_ichannel_settings">
                     <img class="ichannel_settings" src="../../media/icons/settings.png"></img>
                 </button>
             </div>
             </col>
-            <col class="buffer_ch_col buffer_ch_gap" width="179dp">
+            <col class="buffer_ch_spacer" width="14dp">
+                <div class="buffer_ch_spacer_top"></div>
+                <div class="buffer_ch_spacer_bottom"></div>
+            </col>
+            <col class="buffer_ch_col" width="179dp">
             <div class="ichannel" id="ichannel1">
                 <img class="ichannel_img" id="ichannel1_img"></img>
                 <div class="ichannel_sampler_menu">
@@ -108,14 +112,18 @@
                 <img class="ichannel_close" onclick="buffer_panel_ichannel_close"
                     src="../../media/icons/close.png"></img>
             </div>
-            <div id="ichannel_label">
+            <div class="ichannel_label">
                 iChannel1
                 <button onclick="buffer_panel_ichannel_settings">
                     <img class="ichannel_settings" src="../../media/icons/settings.png"></img>
                 </button>
             </div>
             </col>
-            <col class="buffer_ch_col buffer_ch_gap" width="179dp">
+            <col class="buffer_ch_spacer" width="14dp">
+                <div class="buffer_ch_spacer_top"></div>
+                <div class="buffer_ch_spacer_bottom"></div>
+            </col>
+            <col class="buffer_ch_col" width="179dp">
             <div class="ichannel" id="ichannel2">
                 <img class="ichannel_img" id="ichannel2_img"></img>
                 <div class="ichannel_sampler_menu">
@@ -135,14 +143,18 @@
                 <img class="ichannel_close" onclick="buffer_panel_ichannel_close"
                     src="../../media/icons/close.png"></img>
             </div>
-            <div id="ichannel_label">
+            <div class="ichannel_label">
                 iChannel2
                 <button onclick="buffer_panel_ichannel_settings">
                     <img class="ichannel_settings" src="../../media/icons/settings.png"></img>
                 </button>
             </div>
             </col>
-            <col class="buffer_ch_col_last buffer_ch_gap" width="179dp">
+            <col class="buffer_ch_spacer" width="14dp">
+                <div class="buffer_ch_spacer_top"></div>
+                <div class="buffer_ch_spacer_bottom"></div>
+            </col>
+            <col class="buffer_ch_col_last" width="179dp">
             <div class="ichannel" id="ichannel3">
                 <img class="ichannel_img" id="ichannel3_img"></img>
                 <div class="ichannel_sampler_menu">
@@ -162,7 +174,7 @@
                 <img class="ichannel_close" onclick="buffer_panel_ichannel_close"
                     src="../../media/icons/close.png"></img>
             </div>
-            <div id="ichannel_label">
+            <div class="ichannel_label">
                 iChannel3
                 <button onclick="buffer_panel_ichannel_settings">
                     <img class="ichannel_settings" src="../../media/icons/settings.png"></img>

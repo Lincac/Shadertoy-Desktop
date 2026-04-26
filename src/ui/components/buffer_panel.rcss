@@ -50,7 +50,8 @@
     height: 100%;
     overflow: hidden;
     margin-top: 0;
-    padding: 4dp;
+    /* 底边略减，给 iChannel 标签行多留一点可视高度 */
+    padding: 4dp 4dp 2dp 4dp;
     border-top: 4dp;
     border-color: #F8B030;
     box-sizing: border-box;
@@ -151,7 +152,7 @@ body.buffer_panel {
     position: relative;
     display: block;
     flex: 1 1 auto;
-    min-height: 100dp;
+    min-height: 72dp;
     width: 100%;
     box-sizing: border-box;
     padding: 4dp 0;
@@ -284,7 +285,10 @@ datagrid.buffer_panel_channels_grid {
     flex: 0 0 auto;
     width: 100%;
     box-sizing: border-box;
-    margin-top: 4dp;
+    /* 与上方编辑器拉开一点，避免整块贴太紧 */
+    margin-top: 8dp;
+    /* 避免标签行贴侧栏底被 overflow 裁掉 */
+    margin-bottom: 8dp;
 }
 
 /* 表格布局里 margin-right 常无效：用后续列 margin-left 拉出列间空白；末列 padding-right 留右缘细缝 */
@@ -302,18 +306,37 @@ col.buffer_ch_col_last .ichannel_sampler_menu {
     padding-right: 6dp;
 }
 
-/* datagrid 列间：RmlUi 不支持 border-collapse/spacing；用列 padding-left 挤出灰色空隙 */
-col.buffer_ch_gap {
-    padding-left: 12dp;
+/* 通道列之间的物理窄列（datagrid 内 margin 常无效，见 buffer_panel.rml 中 buffer_ch_spacer） */
+col.buffer_ch_spacer {
+    width: 14dp;
+    min-width: 14dp;
+    max-width: 14dp;
     box-sizing: border-box;
+    background-color: #d2d2d2;
 }
 
-datagrid.buffer_panel_channels_grid col.buffer_ch_col #ichannel_label {
+.buffer_ch_spacer_top {
+    display: block;
+    width: 14dp;
+    height: 128dp;
+    box-sizing: border-box;
+    background-color: #d2d2d2;
+}
+
+.buffer_ch_spacer_bottom {
+    display: block;
+    width: 14dp;
+    height: 28dp;
+    box-sizing: border-box;
+    background-color: #d2d2d2;
+}
+
+datagrid.buffer_panel_channels_grid col.buffer_ch_col .ichannel_label {
     width: 179dp;
     max-width: none;
 }
 
-datagrid.buffer_panel_channels_grid col.buffer_ch_col_last #ichannel_label {
+datagrid.buffer_panel_channels_grid col.buffer_ch_col_last .ichannel_label {
     width: 179dp;
     max-width: none;
 }
@@ -437,11 +460,16 @@ datagrid.buffer_panel_channels_grid col.buffer_ch_col_last #ichannel_label {
     margin: 4dp;
 }
 
-#ichannel_label {
+.ichannel_label {
+    display: block;
+    position: relative;
     background-color: #ffffff;
     text-align: left;
-    padding: 4dp;
-    height: 15dp;
+    padding: 4dp 4dp 5dp 4dp;
+    min-height: 26dp;
+    line-height: 18dp;
+    font-size: 12dp;
+    font-weight: normal;
     box-sizing: border-box;
 }
 

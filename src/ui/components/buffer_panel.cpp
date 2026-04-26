@@ -960,8 +960,9 @@ void BufferPanel::reload_json() {
                 pass_code_ta->SetValue(Rml::String(code.c_str()));
                 set_code_stats_for_textarea(pass_code_ta);
             }
+            // buffer_panel.rml：每通道一列后接 buffer_ch_spacer，故 0→0、1→2、2→4、3→6
             for (auto channel_i = 0; channel_i < 4; ++channel_i) {
-                auto *datagrid_column = datagrid_header->GetChild(channel_i);
+                auto *datagrid_column = datagrid_header->GetChild(channel_i * 2);
                 auto *ichannel = datagrid_column->GetChild(0);
                 auto *ichannel_label = datagrid_column->GetChild(1);
                 auto *ichannel_label_settings = ichannel_label->GetChild(1);
