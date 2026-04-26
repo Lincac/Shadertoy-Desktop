@@ -5,6 +5,7 @@
     </head>
 
     <body class="buffer_panel">
+        <div class="buffer_panel_column">
         <div class="shader_input_wrap">
             <div class="shader_input_header" onclick="buffer_panel_shader_input_toggle">
                 <div class="shader_input_chevron_cell">
@@ -50,7 +51,10 @@
                 </div>
             </div>
         </div>
-        <datagrid>
+        <div class="buffer_pass_code_editor_wrap">
+            <textarea class="buffer_pass_code_editor" rows="6" wrap="off"></textarea>
+        </div>
+        <datagrid class="buffer_panel_channels_grid">
             <col width="188dp">
             <div class="ichannel" id="ichannel0">
                 <img class="ichannel_img" id="ichannel0_img"></img>
@@ -160,6 +164,7 @@
             </div>
             </col>
         </datagrid>
+        </div>
     </body>
 
 </template>

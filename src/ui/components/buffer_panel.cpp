@@ -5,6 +5,7 @@
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/ElementText.h>
+#include <RmlUi/Core/Elements/ElementFormControlTextArea.h>
 #include <RmlUi/Core/Elements/ElementTabSet.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/ID.h>
@@ -116,6 +117,62 @@ namespace {
         }
         return nullptr;
     }
+
+    auto find_descendant_by_tag(Rml::Element *root, Rml::String const &tag) -> Rml::Element * {
+        if (root == nullptr) {
+            return nullptr;
+        }
+        if (root->GetTagName() == tag) {
+            return root;
+        }
+        for (int i = 0; i < root->GetNumChildren(); ++i) {
+            if (auto *found = find_descendant_by_tag(root->GetChild(i), tag)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    auto find_descendant_by_class(Rml::Element *root, Rml::String const &needle) -> Rml::Element * {
+        if (root == nullptr) {
+            return nullptr;
+        }
+        if (root->GetClassNames().find(needle) != Rml::String::npos) {
+            return root;
+        }
+        for (int i = 0; i < root->GetNumChildren(); ++i) {
+            if (auto *found = find_descendant_by_class(root->GetChild(i), needle)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    class PassCodeChangeListener : public Rml::EventListener {
+      public:
+        void ProcessEvent(Rml::Event &event) override {
+            if (event.GetId() != Rml::EventId::Change) {
+                return;
+            }
+            auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(event.GetTargetElement());
+            if (ta == nullptr || AppUi::s_instance == nullptr) {
+                return;
+            }
+            auto *attr = ta->GetAttribute("data-pass");
+            if (attr == nullptr) {
+                return;
+            }
+            auto pass_name = attr->Get<Rml::String>();
+            auto name = std::string(pass_name.data(), pass_name.size());
+            auto *pass_ptr = find_pass(name);
+            if (pass_ptr == nullptr) {
+                return;
+            }
+            (*pass_ptr)["code"] = std::string(ta->GetValue());
+            AppUi::s_instance->buffer_panel.dirty = true;
+        }
+    };
+    PassCodeChangeListener pass_code_change_listener;
 
     class UpdateListener : public efsw::FileWatchListener {
       public:
@@ -812,27 +869,35 @@ void BufferPanel::reload_json() {
 
         auto *panels = tabs_element->GetChild(1);
         auto *panel = panels->GetChild(tab_index);
-        Rml::Element *datagrid = nullptr;
-        for (int pi = 0; pi < panel->GetNumChildren(); ++pi) {
-            auto *panel_child = panel->GetChild(pi);
-            if (panel_child != nullptr && panel_child->GetTagName() == "datagrid") {
-                datagrid = panel_child;
-                break;
-            }
-        }
-        if (datagrid == nullptr && panel->GetNumChildren() > 1) {
-            datagrid = panel->GetChild(1);
-        }
+        auto *datagrid = find_descendant_by_tag(panel, "datagrid");
         if (datagrid == nullptr) {
-            datagrid = panel->GetChild(0);
+            ++tab_index;
+            continue;
         }
         auto *datagrid_header = datagrid->GetChild(0);
+
+        auto *editor_wrap = find_descendant_by_class(panel, "buffer_pass_code_editor_wrap");
+        auto *ta_el = find_descendant_by_class(panel, "buffer_pass_code_editor");
+        auto *pass_code_ta = dynamic_cast<Rml::ElementFormControlTextArea *>(ta_el);
 
         auto &inputs = renderpass["inputs"];
 
         if (renderpass["type"] == "common") {
             datagrid->SetAttribute("style", "display: none;");
+            if (editor_wrap != nullptr) {
+                editor_wrap->SetAttribute("style", "display: none;");
+            }
         } else {
+            if (editor_wrap != nullptr) {
+                editor_wrap->RemoveAttribute("style");
+            }
+            if (pass_code_ta != nullptr) {
+                pass_code_ta->SetAttribute("data-pass", Rml::String(name.c_str()));
+                pass_code_ta->AddEventListener(Rml::EventId::Change, &pass_code_change_listener);
+                auto code = std::string(renderpass["code"]);
+                replace_all(code, "\\n", "\n");
+                pass_code_ta->SetValue(Rml::String(code.c_str()));
+            }
             for (auto channel_i = 0; channel_i < 4; ++channel_i) {
                 auto *datagrid_column = datagrid_header->GetChild(channel_i);
                 auto *ichannel = datagrid_column->GetChild(0);

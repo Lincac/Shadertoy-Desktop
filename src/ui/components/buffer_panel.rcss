@@ -9,10 +9,70 @@
     padding-top: 1dp;
     padding-bottom: 1dp;
     background-color: #d2d2d2;
+    /* RmlUi: 不可对同一元素同时使用 position:absolute 与 display:flex；flex 放在 #buffer_panel_main 内 */
+    display: block;
 }
 
+/* 填满侧栏内容区；本身用 block + absolute，子级再用 flex */
+#buffer_panel_main {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: block;
+    overflow: hidden;
+    z-index: 0;
+}
+
+/* 侧栏 tabset：用 flex 分配「标签行 + panels 区域」；panels 内 panel 再用 block，避免与 body 形成父子双 flex（RmlUi 不支持） */
+#buffer_tabs {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+}
+
+#buffer_tabs panels {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: block;
+    overflow: hidden;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+#buffer_tabs panels panel {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    margin-top: 0;
+    padding: 4dp;
+    border-top: 4dp;
+    border-color: #F8B030;
+    box-sizing: border-box;
+}
+
+#buffer_tabs tabs {
+    flex: 0 0 auto;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* 其它 tabset（如 #bpiw_tabs）保持块级流式，避免继承侧栏 flex */
 tabset {
     display: block;
+    width: 100%;
+}
+
+/* iChannel 选择窗口等：panel 为块级（侧栏规则由 #buffer_tabs panels panel 覆盖） */
+tabset panels panel {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
 }
 
 tabs {
@@ -21,7 +81,7 @@ tabs {
     margin-bottom: 0;
     position: relative;
     clip: none;
-    text-align: right;
+    text-align: left;
     vertical-align: top;
 }
 
@@ -60,21 +120,66 @@ tab:selected {
     border-top-color: #F8B030;
 }
 
-panel {
+body.buffer_panel {
+    /* 块级包裹一层，内层 .buffer_panel_column 再 flex，避免 panel(flex) 直接包住 flex body */
     display: block;
-    margin-top: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.buffer_panel_column {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    height: 100%;
+    min-height: 0;
+    width: 100%;
+    overflow: hidden;
+}
+
+/* RmlUi：flex 容器内不能再套 display:flex 子节点；此处用 block + 子元素 height:100% 撑满中间栏 */
+.buffer_pass_code_editor_wrap {
+    display: block;
+    flex: 1 1 auto;
+    min-height: 72dp;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4dp 0;
+    overflow: hidden;
+}
+
+textarea.buffer_pass_code_editor {
+    min-height: 48dp;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    display: block;
+    font-size: 11dp;
+    font-weight: normal;
+    font-family: monospace;
+    color: #1a1a1a;
+    background-color: #f6f6f6;
+    border: 1dp #a8a8a8;
     padding: 4dp;
-    border-top: 4dp;
-    border-color: #F8B030;
+    white-space: pre;
+    tab-index: auto;
+}
+
+datagrid.buffer_panel_channels_grid {
+    flex: 0 0 auto;
     width: 100%;
     box-sizing: border-box;
 }
 
 .shader_input_wrap {
     display: block;
+    flex: 0 0 auto;
     width: 100%;
     box-sizing: border-box;
-    margin-bottom: 4dp;
+    margin-bottom: 2dp;
 }
 
 .shader_input_header {
@@ -295,6 +400,7 @@ panel {
     border-color: #00000000;
     background-color: #8d8d8d;
     image-color: black;
+    z-index: 2;
 }
 
 #buffer_add:hover {
@@ -309,6 +415,7 @@ panel {
     top: 4dp;
     background-color: #eeeeee;
     border-color: #b6b6b6;
+    z-index: 2;
 }
 
 .buffer_panel_add_option {

@@ -66,8 +66,10 @@
                         </col>
                     </datagrid>
                 </div>
-                <tabset id="buffer_tabs">
-                </tabset>
+                <div id="buffer_panel_main">
+                    <tabset id="buffer_tabs">
+                    </tabset>
+                </div>
             </div>
         </div>
     </body>
