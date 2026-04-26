@@ -7,7 +7,7 @@
     font: bold;
     width: 760dp;
     padding-top: 1dp;
-    padding-bottom: 1dp;
+    padding-bottom: 0dp;
     background-color: #d2d2d2;
     /* RmlUi: 不可对同一元素同时使用 position:absolute 与 display:flex；flex 放在 #buffer_panel_main 内 */
     display: block;
@@ -50,8 +50,8 @@
     height: 100%;
     overflow: hidden;
     margin-top: 0;
-    /* 底边略减，给 iChannel 标签行多留一点可视高度 */
-    padding: 4dp 4dp 2dp 4dp;
+    /* 底边贴底：iChannel 区域更靠近侧栏窗口下边 */
+    padding: 4dp 4dp 0dp 4dp;
     border-top: 4dp;
     border-color: #F8B030;
     box-sizing: border-box;
@@ -289,8 +289,7 @@ datagrid.buffer_panel_channels_grid {
     box-sizing: border-box;
     /* 与上方编辑器拉开一点，避免整块贴太紧 */
     margin-top: 8dp;
-    /* 避免标签行贴侧栏底被 overflow 裁掉 */
-    margin-bottom: 8dp;
+    margin-bottom: 0dp;
 }
 
 /* 表格布局里 margin-right 常无效：用后续列 margin-left 拉出列间空白；末列 padding-right 留右缘细缝 */
