@@ -63,6 +63,8 @@
     box-sizing: border-box;
     /* 消除 inline-block tab 行盒底部空隙，否则与下方 panel 橙边之间会露出一条灰缝 */
     line-height: 0;
+    /* 仅为侧栏 ➕ 留空；勿写进全局 tabs，否则会误伤 #bpiw_tabs */
+    margin-left: 30dp;
 }
 
 /* 其它 tabset（如 #bpiw_tabs）保持块级流式，避免继承侧栏 flex */
@@ -80,7 +82,7 @@ tabset panels panel {
 
 tabs {
     display: inline-block;
-    margin-left: 30dp;
+    margin-left: 0;
     margin-bottom: 0;
     position: relative;
     clip: none;
@@ -597,9 +599,30 @@ datagrid.buffer_panel_channels_grid col.buffer_ch_col_last .ichannel_label {
     border: 1dp;
     border-color: #747474;
     padding-bottom: 8dp;
-
+    box-sizing: border-box;
+    /* 与 misc 三列 datagrid 同宽，避免内部 665dp 把滚动条挤到中间、右侧留死区 */
+    width: 660dp;
     top: 5%;
     left: 5%;
+}
+
+#bpiw_content {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+#bpiw_tabs {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+#bpiw_tabs tabs {
+    margin-left: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .bpiw_button {
@@ -623,19 +646,33 @@ datagrid.buffer_panel_channels_grid col.buffer_ch_col_last .ichannel_label {
     padding: 4dp;
     background-color: rgb(255, 255, 255);
     height: 16dp;
+    cursor: move;
+}
+
+#bpiw_header button {
+    cursor: pointer;
 }
 
 .bpiw_panel {
-    width: 660dp;
+    position: relative;
+    width: 100%;
     height: 70%;
+    max-height: 520dp;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
 .bpiw_panel_container {
     display: block;
     position: absolute;
-    width: 665dp;
-    height: 100%;
-    overflow-y: scroll;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: auto;
+    box-sizing: border-box;
+    overflow-y: auto;
     overflow-x: hidden;
 }
 

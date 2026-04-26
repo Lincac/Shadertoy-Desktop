@@ -23,6 +23,10 @@ struct BufferPanel {
     Rml::ElementTabSet *tabs_element{};
     Rml::Element *bpiw_element{};
     Rml::Element *open_ichannel_img_element{};
+    /** iChannel 选择弹窗：标题栏拖拽 */
+    bool bpiw_dragging = false;
+    float bpiw_drag_grab_mx = 0.f;
+    float bpiw_drag_grab_my = 0.f;
 
     BufferFileEditState *common_file_edit_state{};
     BufferFileEditState *buffer00_file_edit_state{};

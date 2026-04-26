@@ -12,6 +12,7 @@
 #include <RmlUi/Core/Input.h>
 #include <RmlUi/Debugger.h>
 
+#include <algorithm>
 #include <fstream>
 
 #include <ui/app_ui.hpp>
@@ -45,7 +46,7 @@ namespace {
                         // Show input selection window
                         AppUi::s_instance->buffer_panel.open_ichannel_img_element = element;
                         auto *bpiw_element = AppUi::s_instance->buffer_panel.bpiw_element;
-                        bpiw_element->SetAttribute("style", "display: block;");
+                        bpiw_element->SetProperty("display", "block");
                         bpiw_element->Focus();
                     }
                 }
@@ -61,15 +62,93 @@ namespace {
         void ProcessEvent(Rml::Event &event) override {
             switch (event.GetId()) {
             case Rml::EventId::Blur: {
-                auto *bpiw_element = AppUi::s_instance->buffer_panel.bpiw_element;
-                bpiw_element->SetAttribute("style", "display: none;");
-                AppUi::s_instance->buffer_panel.open_ichannel_img_element = nullptr;
+                auto &panel = AppUi::s_instance->buffer_panel;
+                if (panel.bpiw_dragging) {
+                    break;
+                }
+                auto *bpiw_el = panel.bpiw_element;
+                bpiw_el->SetProperty("display", "none");
+                panel.open_ichannel_img_element = nullptr;
             } break;
             default: break;
             }
         }
     };
     BpiwEventListener bpiw_event_listener;
+
+    static auto bpiw_target_is_close_tree(Rml::Element *target) -> bool {
+        for (auto *el = target; el != nullptr; el = el->GetParentNode()) {
+            if (el->GetId() == "bpiw_close") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    class BpiwHeaderDragListener : public Rml::EventListener {
+      public:
+        void ProcessEvent(Rml::Event &event) override {
+            if (event.GetId() != Rml::EventId::Mousedown) {
+                return;
+            }
+            if (event.GetParameter("button", 0) != 0) {
+                return;
+            }
+            if (bpiw_target_is_close_tree(event.GetTargetElement())) {
+                return;
+            }
+            auto &panel = AppUi::s_instance->buffer_panel;
+            auto *bw = panel.bpiw_element;
+            if (bw == nullptr) {
+                return;
+            }
+            auto const pos = bw->GetAbsoluteOffset();
+            auto const mx = event.GetParameter("mouse_x", 0.0f);
+            auto const my = event.GetParameter("mouse_y", 0.0f);
+            panel.bpiw_drag_grab_mx = mx - pos.x;
+            panel.bpiw_drag_grab_my = my - pos.y;
+            panel.bpiw_dragging = true;
+        }
+    };
+    BpiwHeaderDragListener bpiw_header_drag_listener;
+
+    class BpiwScreenDragListener : public Rml::EventListener {
+      public:
+        void ProcessEvent(Rml::Event &event) override {
+            auto &panel = AppUi::s_instance->buffer_panel;
+            switch (event.GetId()) {
+            case Rml::EventId::Mousemove: {
+                if (!panel.bpiw_dragging || panel.bpiw_element == nullptr) {
+                    return;
+                }
+                auto *bw = panel.bpiw_element;
+                auto *ctx = bw->GetContext();
+                if (ctx == nullptr) {
+                    return;
+                }
+                auto const mx = event.GetParameter("mouse_x", 0.0f);
+                auto const my = event.GetParameter("mouse_y", 0.0f);
+                float nl = mx - panel.bpiw_drag_grab_mx;
+                float nt = my - panel.bpiw_drag_grab_my;
+                auto const dim = ctx->GetDimensions();
+                auto const sz = bw->GetBox().GetSize(Rml::Box::BORDER);
+                float const max_x = float(dim.x) - sz.x;
+                float const max_y = float(dim.y) - sz.y;
+                nl = std::max(0.f, std::min(nl, max_x));
+                nt = std::max(0.f, std::min(nt, max_y));
+                auto const left_s = fmt::format("{:.0f}px", nl);
+                auto const top_s = fmt::format("{:.0f}px", nt);
+                (void)bw->SetProperty("left", Rml::String(left_s.c_str()));
+                (void)bw->SetProperty("top", Rml::String(top_s.c_str()));
+            } break;
+            case Rml::EventId::Mouseup: {
+                panel.bpiw_dragging = false;
+            } break;
+            default: break;
+            }
+        }
+    };
+    BpiwScreenDragListener bpiw_screen_drag_listener;
 
     class BufferPanelAddOptionsEventListener : public Rml::EventListener {
       public:
@@ -315,6 +394,14 @@ void BufferPanel::load([[maybe_unused]] Rml::Context *rml_context, Rml::ElementD
     bpiw_element = document->GetElementById("bpiw");
     bpiw_element->AddEventListener(Rml::EventId::Blur, &bpiw_event_listener);
 
+    if (auto *bpiw_header = document->GetElementById("bpiw_header"); bpiw_header != nullptr) {
+        bpiw_header->AddEventListener(Rml::EventId::Mousedown, &bpiw_header_drag_listener);
+    }
+    if (auto *screen_el = document->GetElementById("screen"); screen_el != nullptr) {
+        screen_el->AddEventListener(Rml::EventId::Mousemove, &bpiw_screen_drag_listener);
+        screen_el->AddEventListener(Rml::EventId::Mouseup, &bpiw_screen_drag_listener);
+    }
+
     auto *buffer_panel_add_panel = document->GetElementById("buffer_panel_add_panel");
     buffer_panel_add_panel->AddEventListener(Rml::EventId::Blur, &buffer_panel_add_options_event_listener);
 
@@ -373,7 +460,8 @@ void BufferPanel::buffer_panel_ichannel_settings(Rml::Event &event) {
     }
 }
 void BufferPanel::buffer_panel_bpiw_close() {
-    bpiw_element->SetAttribute("style", "display: none;");
+    bpiw_dragging = false;
+    bpiw_element->SetProperty("display", "none");
     bpiw_element->Blur();
 }
 void BufferPanel::buffer_panel_change_filter(Rml::Event &event, Rml::ElementText *tab_div_content) {
@@ -501,7 +589,8 @@ void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, Rml::ElementText *
             pass["inputs"].push_back(new_input);
         }
 
-        bpiw_element->SetAttribute("style", "display: none;");
+        bpiw_dragging = false;
+        bpiw_element->SetProperty("display", "none");
         bpiw_element->Blur();
         dirty = true;
     }
