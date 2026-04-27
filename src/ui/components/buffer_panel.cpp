@@ -264,6 +264,16 @@ namespace {
         return nullptr;
     }
 
+    /** 点击 bpiw_option 内任意处（含文字说明区）时，CurrentElement 可能是子节点；需定位预览图以安全读取 src。 */
+    auto bpiw_option_preview_img_from_click(Rml::Event &event) -> Rml::Element * {
+        for (auto *node = event.GetCurrentElement(); node != nullptr; node = node->GetParentNode()) {
+            if (node->IsClassSet("bpiw_option")) {
+                return find_descendant_by_class(node, "bpiw_option_preview");
+            }
+        }
+        return nullptr;
+    }
+
     static constexpr size_t buffer_panel_pass_code_max_chars = 100000;
 
     auto sync_textarea_value_to_pass_json(Rml::ElementFormControlTextArea *ta) -> bool {
@@ -528,109 +538,121 @@ void BufferPanel::buffer_panel_change_wrap(Rml::Event &event, Rml::ElementText *
     }
 }
 void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, Rml::ElementText *tab_div_content) {
-    auto *select_div = event.GetCurrentElement();
-    auto *select_img = select_div->GetChild(0);
-    if (select_img != nullptr && open_ichannel_img_element != nullptr) {
-        auto img_path = select_img->GetAttribute("src")->Get(Rml::String(""));
-
-        auto *datagrid_column = open_ichannel_img_element->GetParentNode()->GetParentNode();
-        auto *ichannel = datagrid_column->GetChild(0);
-        auto *ichannel_label = datagrid_column->GetChild(1);
-        auto *ichannel_label_settings = ichannel_label->GetChild(1);
-
-        auto *ichannel_img = ichannel->GetChild(0);
-        auto *ichannel_sampler_menu = ichannel->GetChild(1);
-        auto *ichannel_close = ichannel->GetChild(2);
-
-        ichannel_img->SetAttribute("src", img_path);
-        ichannel_img->SetAttribute("style", "display: inline-block; image-color: #ffffff;");
-        ichannel_close->SetAttribute("style", "display: inline-block;");
-        ichannel_sampler_menu->SetAttribute("style", "display: none;");
-        ichannel_label_settings->SetAttribute("style", "display: block;");
-
-        auto ichannel_name = ichannel->GetId();
-        auto &pass = *find_pass(tab_div_content->GetText());
-        auto channel_index = int(ichannel_name[8]) - int('0');
-
-        auto *bpiw_tabs = dynamic_cast<Rml::ElementTabSet *>(bpiw_element->GetElementById("bpiw_tabs"));
-
-        replace_all(img_path, "../../media/images/", "/media/a/");
-        auto default_sampler = nlohmann::json{};
-        default_sampler["filter"] = "linear";
-        default_sampler["wrap"] = "clamp";
-        default_sampler["vflip"] = "true";
-        default_sampler["srgb"] = "false";
-        default_sampler["internal"] = "byte";
-
-        auto new_input = nlohmann::json{};
-        new_input["id"] = std::to_string(std::hash<std::string>{}(img_path));
-        new_input["channel"] = channel_index;
-        new_input["sampler"] = default_sampler;
-        new_input["published"] = 1;
-
-        switch (bpiw_tabs->GetActiveTab()) {
-        case 0: {
-            if (img_path == "../../media/icons/keyboard.png") {
-                new_input["filepath"] = "/presets/tex00.jpg";
-                new_input["type"] = "keyboard";
-                new_input["sampler"]["filter"] = "nearest";
-            } else if (img_path == "../../media/icons/buffer00.png") {
-                new_input["id"] = "4dXGR8";
-                new_input["filepath"] = "/media/previz/buffer00.png";
-                new_input["type"] = "buffer";
-            } else if (img_path == "../../media/icons/buffer01.png") {
-                new_input["id"] = "XsXGR8";
-                new_input["filepath"] = "/media/previz/buffer01.png";
-                new_input["type"] = "buffer";
-            } else if (img_path == "../../media/icons/buffer02.png") {
-                new_input["id"] = "4sXGR8";
-                new_input["filepath"] = "/media/previz/buffer02.png";
-                new_input["type"] = "buffer";
-            } else if (img_path == "../../media/icons/buffer03.png") {
-                new_input["id"] = "XdfGR8";
-                new_input["filepath"] = "/media/previz/buffer03.png";
-                new_input["type"] = "buffer";
-            } else if (img_path == "../../media/icons/cubemap00.png") {
-                new_input["id"] = "4dX3Rr";
-                new_input["filepath"] = "/media/previz/cubemap00.png";
-                new_input["type"] = "cubemap";
-            }
-        } break;
-        case 1: {
-            new_input["filepath"] = img_path;
-            new_input["type"] = "texture";
-            new_input["sampler"]["filter"] = "mipmap";
-            new_input["sampler"]["wrap"] = "repeat";
-        } break;
-        case 2: {
-            new_input["filepath"] = img_path;
-            new_input["type"] = "cubemap";
-        } break;
-        case 3: {
-            if (img_path == "../../media/icons/volume_gray.png") {
-                new_input["id"] = "4sfGRr";
-                new_input["filepath"] = "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin";
-                new_input["type"] = "volume";
-            } else if (img_path == "../../media/icons/buffer00.png") {
-                new_input["id"] = "XdX3Rr";
-                new_input["filepath"] = "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin";
-                new_input["type"] = "volume";
-            }
-        } break;
-        }
-
-        auto *channel_input = find_input(pass, channel_index);
-        if (channel_input != nullptr) {
-            *channel_input = new_input;
-        } else {
-            pass["inputs"].push_back(new_input);
-        }
-
-        bpiw_dragging = false;
-        bpiw_element->SetProperty("display", "none");
-        bpiw_element->Blur();
-        dirty = true;
+    auto *select_img = bpiw_option_preview_img_from_click(event);
+    if (select_img == nullptr || open_ichannel_img_element == nullptr || tab_div_content == nullptr) {
+        return;
     }
+    auto *src_attr = select_img->GetAttribute("src");
+    if (src_attr == nullptr) {
+        return;
+    }
+    auto img_path = src_attr->Get(Rml::String(""));
+
+    auto *pass_ptr = find_pass(tab_div_content->GetText());
+    if (pass_ptr == nullptr) {
+        return;
+    }
+    auto &pass = *pass_ptr;
+
+    auto *datagrid_column = open_ichannel_img_element->GetParentNode()->GetParentNode();
+    auto *ichannel = datagrid_column->GetChild(0);
+    auto *ichannel_label = datagrid_column->GetChild(1);
+    auto *ichannel_label_settings = ichannel_label->GetChild(1);
+
+    auto *ichannel_img = ichannel->GetChild(0);
+    auto *ichannel_sampler_menu = ichannel->GetChild(1);
+    auto *ichannel_close = ichannel->GetChild(2);
+
+    ichannel_img->SetAttribute("src", img_path);
+    ichannel_img->SetAttribute("style", "display: inline-block; image-color: #ffffff;");
+    ichannel_close->SetAttribute("style", "display: inline-block;");
+    ichannel_sampler_menu->SetAttribute("style", "display: none;");
+    ichannel_label_settings->SetAttribute("style", "display: block;");
+
+    auto ichannel_name = ichannel->GetId();
+    auto channel_index = int(ichannel_name[8]) - int('0');
+
+    auto *bpiw_tabs = dynamic_cast<Rml::ElementTabSet *>(bpiw_element->GetElementById("bpiw_tabs"));
+    if (bpiw_tabs == nullptr) {
+        return;
+    }
+
+    replace_all(img_path, "../../media/images/", "/media/a/");
+    auto default_sampler = nlohmann::json{};
+    default_sampler["filter"] = "linear";
+    default_sampler["wrap"] = "clamp";
+    default_sampler["vflip"] = "true";
+    default_sampler["srgb"] = "false";
+    default_sampler["internal"] = "byte";
+
+    auto new_input = nlohmann::json{};
+    new_input["id"] = std::to_string(std::hash<std::string>{}(img_path));
+    new_input["channel"] = channel_index;
+    new_input["sampler"] = default_sampler;
+    new_input["published"] = 1;
+
+    switch (bpiw_tabs->GetActiveTab()) {
+    case 0: {
+        if (img_path == "../../media/icons/keyboard.png") {
+            new_input["filepath"] = "/presets/tex00.jpg";
+            new_input["type"] = "keyboard";
+            new_input["sampler"]["filter"] = "nearest";
+        } else if (img_path == "../../media/icons/buffer00.png") {
+            new_input["id"] = "4dXGR8";
+            new_input["filepath"] = "/media/previz/buffer00.png";
+            new_input["type"] = "buffer";
+        } else if (img_path == "../../media/icons/buffer01.png") {
+            new_input["id"] = "XsXGR8";
+            new_input["filepath"] = "/media/previz/buffer01.png";
+            new_input["type"] = "buffer";
+        } else if (img_path == "../../media/icons/buffer02.png") {
+            new_input["id"] = "4sXGR8";
+            new_input["filepath"] = "/media/previz/buffer02.png";
+            new_input["type"] = "buffer";
+        } else if (img_path == "../../media/icons/buffer03.png") {
+            new_input["id"] = "XdfGR8";
+            new_input["filepath"] = "/media/previz/buffer03.png";
+            new_input["type"] = "buffer";
+        } else if (img_path == "../../media/icons/cubemap00.png") {
+            new_input["id"] = "4dX3Rr";
+            new_input["filepath"] = "/media/previz/cubemap00.png";
+            new_input["type"] = "cubemap";
+        }
+    } break;
+    case 1: {
+        new_input["filepath"] = img_path;
+        new_input["type"] = "texture";
+        new_input["sampler"]["filter"] = "mipmap";
+        new_input["sampler"]["wrap"] = "repeat";
+    } break;
+    case 2: {
+        new_input["filepath"] = img_path;
+        new_input["type"] = "cubemap";
+    } break;
+    case 3: {
+        if (img_path == "../../media/icons/volume_gray.png") {
+            new_input["id"] = "4sfGRr";
+            new_input["filepath"] = "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin";
+            new_input["type"] = "volume";
+        } else if (img_path == "../../media/icons/buffer00.png") {
+            new_input["id"] = "XdX3Rr";
+            new_input["filepath"] = "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin";
+            new_input["type"] = "volume";
+        }
+    } break;
+    }
+
+    auto *channel_input = find_input(pass, channel_index);
+    if (channel_input != nullptr) {
+        *channel_input = new_input;
+    } else {
+        pass["inputs"].push_back(new_input);
+    }
+
+    bpiw_dragging = false;
+    bpiw_element->SetProperty("display", "none");
+    bpiw_element->Blur();
+    dirty = true;
 }
 void BufferPanel::buffer_panel_ichannel_close(Rml::Event &event, Rml::ElementText *tab_div_content) {
     auto *datagrid_column = event.GetCurrentElement()->GetParentNode()->GetParentNode();
