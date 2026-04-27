@@ -158,16 +158,17 @@ body.buffer_panel {
     min-height: 72dp;
     width: 100%;
     box-sizing: border-box;
-    padding: 4dp 0;
+    padding: 2dp 0;
     overflow: hidden;
 }
 
 .buffer_pass_code_editor_ta_cell {
     position: absolute;
-    top: 4dp;
+    top: 2dp;
     left: 0;
     right: 0;
-    bottom: 30dp;
+    /* 28dp 工具栏 + 与输入区间隙（略紧于先前 8dp） */
+    bottom: 32dp;
     display: block;
     overflow: hidden;
     box-sizing: border-box;
@@ -204,7 +205,6 @@ textarea.buffer_pass_code_editor {
     display: block;
     background-color: #c8c8c8;
     border: 1dp #a8a8a8;
-    border-top: 0dp;
     padding: 2dp 4dp;
 }
 
@@ -291,8 +291,8 @@ datagrid.buffer_panel_channels_grid {
     flex: 0 0 auto;
     width: 100%;
     box-sizing: border-box;
-    /* 与上方编辑器拉开一点，避免整块贴太紧 */
-    margin-top: 8dp;
+    /* 与上方编译工具栏之间的竖向间距（原先 8dp，RmlUi 下 datagrid 用 margin-top 才生效） */
+    margin-top: 2dp;
     margin-bottom: 0dp;
 }
 
