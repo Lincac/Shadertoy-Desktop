@@ -11,11 +11,13 @@
 #include <RmlUi/Debugger.h>
 #include <fmt/format.h>
 #include <nfd.h>
+#include <nlohmann/json.hpp>
 
 #include <ui/app_ui.hpp>
 
 #include <daxa/command_recorder.hpp>
 #include <cassert>
+#include <cstdlib>
 #include <fstream>
 
 namespace {
@@ -400,6 +402,7 @@ void AppUi::save_json(bool save_as) {
         nfdresult_t const result = NFD_SaveDialog("json", "", &out_path);
         if (result == NFD_OKAY) {
             current_save_path = out_path;
+            std::free(out_path);
         } else {
             current_save_path = std::nullopt;
             return;
@@ -407,4 +410,26 @@ void AppUi::save_json(bool save_as) {
     }
     auto file = std::ofstream(*current_save_path);
     file << buffer_panel.get_shadertoy_json();
+}
+
+void AppUi::load_json() {
+    nfdchar_t *out_path = nullptr;
+    nfdresult_t const result = NFD_OpenDialog("json", nullptr, &out_path);
+    if (result != NFD_OKAY || out_path == nullptr) {
+        return;
+    }
+    std::filesystem::path const path(out_path);
+    std::free(out_path);
+
+    auto ifs = std::ifstream(path);
+    if (!ifs) {
+        return;
+    }
+    try {
+        auto parsed = nlohmann::json::parse(ifs);
+        buffer_panel.load_shadertoy_json(std::move(parsed));
+        current_save_path = path;
+    } catch (...) {
+        /* 非法 JSON：忽略，避免打断 UI */
+    }
 }

@@ -55,4 +55,6 @@ struct AppUi {
 
     void toggle_fullscreen();
     void save_json(bool save_as);
+    /** 通过系统文件对话框选择 Shadertoy JSON 并加载到侧栏与视口 */
+    void load_json();
 };

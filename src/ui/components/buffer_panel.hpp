@@ -62,6 +62,7 @@ struct BufferPanel {
     void buffer_panel_add_option(Rml::Event &event);
     void buffer_panel_tab_close(Rml::Event &event);
     void buffer_panel_compile_shader(Rml::Event &event);
+    void buffer_panel_load_json();
     void buffer_panel_shader_input_toggle(Rml::Event &event);
     void sync_all_panel_textareas_to_json();
     void update_active_tab_code_stats_display();

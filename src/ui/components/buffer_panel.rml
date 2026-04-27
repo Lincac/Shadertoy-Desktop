@@ -58,6 +58,7 @@
             <div class="buffer_pass_code_toolbar">
                 <button class="buffer_pass_code_compile_btn" onclick="buffer_panel_compile_shader">▶</button>
                 <span class="buffer_pass_code_stats">0/100000</span>
+                <button class="buffer_pass_code_load_btn" onclick="buffer_panel_load_json">📂</button>
             </div>
         </div>
         <datagrid class="buffer_panel_channels_grid">

@@ -566,6 +566,8 @@ void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
         buffer_panel_tab_close(event);
     } else if (value == "buffer_panel_compile_shader") {
         buffer_panel_compile_shader(event);
+    } else if (value == "buffer_panel_load_json") {
+        buffer_panel_load_json();
     } else if (value == "buffer_panel_shader_input_toggle") {
         buffer_panel_shader_input_toggle(event);
     }
@@ -975,6 +977,12 @@ void BufferPanel::buffer_panel_compile_shader(Rml::Event &) {
     sync_all_panel_textareas_to_json();
     dirty = true;
     update_active_tab_code_stats_display();
+}
+
+void BufferPanel::buffer_panel_load_json() {
+    if (AppUi::s_instance != nullptr) {
+        AppUi::s_instance->load_json();
+    }
 }
 
 void BufferPanel::on_tab_changed() {
