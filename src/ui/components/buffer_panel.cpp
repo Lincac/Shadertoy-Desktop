@@ -93,6 +93,18 @@ namespace {
     };
     BufferPanelEventListener buffer_panel_event_listener;
 
+    static auto element_is_or_contains_ancestor(Rml::Element *ancestor, Rml::Element *node) -> bool {
+        if (ancestor == nullptr || node == nullptr) {
+            return false;
+        }
+        for (auto *p = node; p != nullptr; p = p->GetParentNode()) {
+            if (p == ancestor) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     class BpiwEventListener : public Rml::EventListener {
       public:
         void ProcessEvent(Rml::Event &event) override {
@@ -103,8 +115,19 @@ namespace {
                     break;
                 }
                 auto *bpiw_el = panel.bpiw_element;
+                if (bpiw_el == nullptr) {
+                    break;
+                }
+                /* 焦点移到 #bpiw 内部子节点时仍会触发 #bpiw 的 Blur；勿关闭，否则后续 onclick 无法应用选择。 */
+                if (auto *doc = bpiw_el->GetOwnerDocument(); doc != nullptr) {
+                    if (auto *ctx = doc->GetContext(); ctx != nullptr) {
+                        if (element_is_or_contains_ancestor(bpiw_el, ctx->GetFocusElement())) {
+                            break;
+                        }
+                    }
+                }
                 bpiw_el->SetProperty("display", "none");
-                panel.open_ichannel_img_element = nullptr;
+                /* 勿在此清空 open_ichannel_img_element：Blur 常先于选项的 onclick，清空会导致无法写入对应 iChannel。 */
             } break;
             default: break;
             }
@@ -264,14 +287,20 @@ namespace {
         return nullptr;
     }
 
-    /** 点击 bpiw_option 内任意处（含文字说明区）时，CurrentElement 可能是子节点；需定位预览图以安全读取 src。 */
+    /** 点击 bpiw_option 内任意处（含文字说明区）时，需从 Current/Target 向上定位选项块再取预览图 src。 */
     auto bpiw_option_preview_img_from_click(Rml::Event &event) -> Rml::Element * {
-        for (auto *node = event.GetCurrentElement(); node != nullptr; node = node->GetParentNode()) {
-            if (node->IsClassSet("bpiw_option")) {
-                return find_descendant_by_class(node, "bpiw_option_preview");
+        auto const walk = [](Rml::Element *start) -> Rml::Element * {
+            for (auto *node = start; node != nullptr; node = node->GetParentNode()) {
+                if (node->IsClassSet("bpiw_option")) {
+                    return find_descendant_by_class(node, "bpiw_option_preview");
+                }
             }
+            return nullptr;
+        };
+        if (auto *img = walk(event.GetCurrentElement())) {
+            return img;
         }
-        return nullptr;
+        return walk(event.GetTargetElement());
     }
 
     static constexpr size_t buffer_panel_pass_code_max_chars = 100000;
@@ -418,6 +447,60 @@ namespace {
         }
         return row->GetChild(1);
     }
+
+    static auto trim_pass_name(std::string s) -> std::string {
+        while (!s.empty() && static_cast<unsigned char>(s.front()) <= ' ') {
+            s.erase(0, 1);
+        }
+        while (!s.empty() && static_cast<unsigned char>(s.back()) <= ' ') {
+            s.pop_back();
+        }
+        return s;
+    }
+
+    /** 当前 buffer tab 对应的 renderpass 名称（与 JSON 中 name 一致）。模板下 #content 未必含 ElementText 子节点，故多路回退。 */
+    auto active_pass_name_from_tabs(Rml::ElementTabSet *tabs_element) -> std::string {
+        if (tabs_element == nullptr) {
+            return {};
+        }
+        auto const active = tabs_element->GetActiveTab();
+        auto *tab_row = tabs_element->GetChild(0);
+        if (tab_row == nullptr || active < 0 || active >= tab_row->GetNumChildren()) {
+            return {};
+        }
+        auto *tab_handle = tab_row->GetChild(active);
+        if (auto *content_div = buffer_tab_content_div_from_tab(tab_handle); content_div != nullptr) {
+            if (auto *et = dynamic_cast<Rml::ElementText *>(content_div->GetChild(0))) {
+                return trim_pass_name(std::string(et->GetText()));
+            }
+            for (int i = 0; i < content_div->GetNumChildren(); ++i) {
+                if (auto *et = dynamic_cast<Rml::ElementText *>(content_div->GetChild(i))) {
+                    return trim_pass_name(std::string(et->GetText()));
+                }
+            }
+            Rml::String inner;
+            content_div->GetInnerRML(inner);
+            if (!inner.empty()) {
+                auto out = trim_pass_name(std::string(inner.c_str()));
+                if (!out.empty()) {
+                    return out;
+                }
+            }
+        }
+        auto *panels = tabs_element->GetChild(1);
+        if (panels != nullptr && active >= 0 && active < panels->GetNumChildren()) {
+            if (auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(
+                    find_descendant_by_class(panels->GetChild(active), "buffer_pass_code_editor"))) {
+                if (auto *attr = ta->GetAttribute("data-pass"); attr != nullptr) {
+                    auto const s = attr->Get<Rml::String>();
+                    if (!s.empty()) {
+                        return trim_pass_name(std::string(s.data(), s.size()));
+                    }
+                }
+            }
+        }
+        return {};
+    }
 } // namespace
 
 BufferFileEditState::~BufferFileEditState() {
@@ -461,24 +544,20 @@ void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
         return;
     }
 
-    auto *tabs = tabs_element->GetChild(0);
-    auto *tab = tabs->GetChild(tabs_element->GetActiveTab());
-    auto *tab_content_div = buffer_tab_content_div_from_tab(tab);
-    auto *tab_div_content =
-        tab_content_div != nullptr ? dynamic_cast<Rml::ElementText *>(tab_content_div->GetChild(0)) : nullptr;
+    auto const active_pass_name = active_pass_name_from_tabs(tabs_element);
 
     if (value == "buffer_panel_ichannel_settings") {
         buffer_panel_ichannel_settings(event);
     } else if (value == "buffer_panel_bpiw_close") {
         buffer_panel_bpiw_close();
     } else if (value == "buffer_panel_change_filter") {
-        buffer_panel_change_filter(event, tab_div_content);
+        buffer_panel_change_filter(event, active_pass_name);
     } else if (value == "buffer_panel_change_wrap") {
-        buffer_panel_change_wrap(event, tab_div_content);
+        buffer_panel_change_wrap(event, active_pass_name);
     } else if (value == "buffer_panel_bpiw_select") {
-        buffer_panel_bpiw_select(event, tab_div_content);
+        buffer_panel_bpiw_select(event, active_pass_name);
     } else if (value == "buffer_panel_ichannel_close") {
-        buffer_panel_ichannel_close(event, tab_div_content);
+        buffer_panel_ichannel_close(event, active_pass_name);
     } else if (value == "buffer_panel_add") {
         buffer_panel_add(event);
     } else if (value == "buffer_panel_add_option") {
@@ -508,14 +587,22 @@ void BufferPanel::buffer_panel_ichannel_settings(Rml::Event &event) {
 }
 void BufferPanel::buffer_panel_bpiw_close() {
     bpiw_dragging = false;
+    open_ichannel_img_element = nullptr;
     bpiw_element->SetProperty("display", "none");
     bpiw_element->Blur();
 }
-void BufferPanel::buffer_panel_change_filter(Rml::Event &event, Rml::ElementText *tab_div_content) {
+void BufferPanel::buffer_panel_change_filter(Rml::Event &event, std::string const &active_pass_name) {
     auto *filter_select = dynamic_cast<Rml::ElementFormControlSelect *>(event.GetCurrentElement());
+    if (filter_select == nullptr || active_pass_name.empty()) {
+        return;
+    }
+    auto *pass_ptr = find_pass(active_pass_name);
+    if (pass_ptr == nullptr) {
+        return;
+    }
+    auto &pass = *pass_ptr;
     auto *ichannel = filter_select->GetParentNode()->GetParentNode();
     auto ichannel_name = ichannel->GetId();
-    auto &pass = *find_pass(tab_div_content->GetText());
     auto channel_index = int(ichannel_name[8]) - int('0');
     auto *channel_input = find_input(pass, channel_index);
     if (channel_input != nullptr) {
@@ -524,11 +611,18 @@ void BufferPanel::buffer_panel_change_filter(Rml::Event &event, Rml::ElementText
         dirty = true;
     }
 }
-void BufferPanel::buffer_panel_change_wrap(Rml::Event &event, Rml::ElementText *tab_div_content) {
+void BufferPanel::buffer_panel_change_wrap(Rml::Event &event, std::string const &active_pass_name) {
     auto *wrap_select = dynamic_cast<Rml::ElementFormControlSelect *>(event.GetCurrentElement());
+    if (wrap_select == nullptr || active_pass_name.empty()) {
+        return;
+    }
+    auto *pass_ptr = find_pass(active_pass_name);
+    if (pass_ptr == nullptr) {
+        return;
+    }
+    auto &pass = *pass_ptr;
     auto *ichannel = wrap_select->GetParentNode()->GetParentNode();
     auto ichannel_name = ichannel->GetId();
-    auto &pass = *find_pass(tab_div_content->GetText());
     auto channel_index = int(ichannel_name[8]) - int('0');
     auto *channel_input = find_input(pass, channel_index);
     if (channel_input != nullptr) {
@@ -537,9 +631,9 @@ void BufferPanel::buffer_panel_change_wrap(Rml::Event &event, Rml::ElementText *
         dirty = true;
     }
 }
-void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, Rml::ElementText *tab_div_content) {
+void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, std::string const &active_pass_name) {
     auto *select_img = bpiw_option_preview_img_from_click(event);
-    if (select_img == nullptr || open_ichannel_img_element == nullptr || tab_div_content == nullptr) {
+    if (select_img == nullptr || open_ichannel_img_element == nullptr || active_pass_name.empty()) {
         return;
     }
     auto *src_attr = select_img->GetAttribute("src");
@@ -548,11 +642,16 @@ void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, Rml::ElementText *
     }
     auto img_path = src_attr->Get(Rml::String(""));
 
-    auto *pass_ptr = find_pass(tab_div_content->GetText());
+    auto *pass_ptr = find_pass(active_pass_name);
     if (pass_ptr == nullptr) {
         return;
     }
     auto &pass = *pass_ptr;
+
+    auto *bpiw_tabs = dynamic_cast<Rml::ElementTabSet *>(bpiw_element->GetElementById("bpiw_tabs"));
+    if (bpiw_tabs == nullptr) {
+        return;
+    }
 
     auto *datagrid_column = open_ichannel_img_element->GetParentNode()->GetParentNode();
     auto *ichannel = datagrid_column->GetChild(0);
@@ -571,11 +670,6 @@ void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, Rml::ElementText *
 
     auto ichannel_name = ichannel->GetId();
     auto channel_index = int(ichannel_name[8]) - int('0');
-
-    auto *bpiw_tabs = dynamic_cast<Rml::ElementTabSet *>(bpiw_element->GetElementById("bpiw_tabs"));
-    if (bpiw_tabs == nullptr) {
-        return;
-    }
 
     replace_all(img_path, "../../media/images/", "/media/a/");
     auto default_sampler = nlohmann::json{};
@@ -650,16 +744,25 @@ void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, Rml::ElementText *
     }
 
     bpiw_dragging = false;
+    open_ichannel_img_element = nullptr;
     bpiw_element->SetProperty("display", "none");
     bpiw_element->Blur();
     dirty = true;
 }
-void BufferPanel::buffer_panel_ichannel_close(Rml::Event &event, Rml::ElementText *tab_div_content) {
+void BufferPanel::buffer_panel_ichannel_close(Rml::Event &event, std::string const &active_pass_name) {
+    if (active_pass_name.empty()) {
+        return;
+    }
+    auto *pass_ptr = find_pass(active_pass_name);
+    if (pass_ptr == nullptr) {
+        return;
+    }
+    auto &pass = *pass_ptr;
+
     auto *datagrid_column = event.GetCurrentElement()->GetParentNode()->GetParentNode();
     auto *ichannel = datagrid_column->GetChild(0);
 
     auto ichannel_name = ichannel->GetId();
-    auto &pass = *find_pass(tab_div_content->GetText());
     auto channel_index = int(ichannel_name[8]) - int('0');
 
     int current_index = 0;
