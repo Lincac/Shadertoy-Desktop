@@ -1,0 +1,16 @@
+<template name="buffer_tab_image" content="content">
+
+    <head>
+        <link type="text/rcss" href="buffer_panel.rcss" />
+    </head>
+
+    <body class="buffer_tab">
+        <!-- 与普通 tab 相同行盒（含右侧留白），避免 Image 与带关闭键的标签高度/底边不齐 -->
+        <div class="buffer_tab_row">
+            <div id="content">
+            </div>
+            <button class="buffer_tab_image_no_close" tabindex="-1"></button>
+        </div>
+    </body>
+
+</template>

@@ -31,6 +31,42 @@ struct BufferFileEditState {
 };
 
 namespace {
+
+    /** Shadertoy 新建着色器风格的默认片段（与官网空白工程常见模板一致） */
+    static auto default_glsl_code_for_pass_type(std::string const &pass_type) -> std::string {
+        if (pass_type == "common") {
+            return "vec4 someFunction( vec4 a, float b )\n{\n    return a+b;\n}";
+        }
+        if (pass_type == "cubemap") {
+            return "void mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n"
+                   "    vec3 col = 0.5 + 0.5*rayDir;\n"
+                   "    fragColor = vec4(col,1.0);\n"
+                   "}\n";
+        }
+        /* buffer / image / sound / volume 等：mainImage 余弦色带 */
+        return "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n"
+               "    vec2 uv = fragCoord/iResolution.xy;\n"
+               "    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));\n"
+               "    fragColor = vec4(col,1.0);\n"
+               "}\n";
+    }
+
+    static auto resolve_pass_code(nlohmann::json &renderpass) -> std::string {
+        std::string pass_type = "image";
+        if (renderpass.contains("type") && renderpass["type"].is_string()) {
+            pass_type = renderpass["type"].get<std::string>();
+        }
+        std::string code;
+        if (renderpass.contains("code") && renderpass["code"].is_string()) {
+            code = renderpass["code"].get<std::string>();
+        }
+        if (code.empty()) {
+            code = default_glsl_code_for_pass_type(pass_type);
+            renderpass["code"] = code;
+        }
+        return code;
+    }
+
     class BufferPanelEventListener : public Rml::EventListener {
       public:
         void ProcessEvent(Rml::Event &event) override {
@@ -216,7 +252,8 @@ namespace {
         if (root == nullptr) {
             return nullptr;
         }
-        if (root->GetClassNames().find(needle) != Rml::String::npos) {
+        /* 勿用 substring：否则 "buffer_pass_code_editor" 会误匹配 "buffer_pass_code_editor_wrap" */
+        if (root->IsClassSet(needle)) {
             return root;
         }
         for (int i = 0; i < root->GetNumChildren(); ++i) {
@@ -244,7 +281,7 @@ namespace {
             return false;
         }
         (*pass_ptr)["code"] = std::string(ta->GetValue());
-        AppUi::s_instance->buffer_panel.dirty = true;
+        /* 不在此处设 dirty：仅在下方的「▶」编译时重新编译 GPU 管线，避免每次输入弹出编译错误 */
         return true;
     }
 
@@ -848,7 +885,6 @@ void BufferPanel::sync_all_panel_textareas_to_json() {
         auto new_code = std::string(ta->GetValue());
         if (pass["code"].get<std::string>() != new_code) {
             pass["code"] = new_code;
-            dirty = true;
         }
     }
 }
@@ -1044,7 +1080,7 @@ void BufferPanel::reload_json() {
             if (pass_code_ta != nullptr) {
                 pass_code_ta->SetAttribute("data-pass", Rml::String(name.c_str()));
                 pass_code_ta->AddEventListener(Rml::EventId::Change, &pass_code_change_listener);
-                auto code = std::string(renderpass["code"]);
+                auto code = resolve_pass_code(renderpass);
                 replace_all(code, "\\n", "\n");
                 pass_code_ta->SetValue(Rml::String(code.c_str()));
                 set_code_stats_for_textarea(pass_code_ta);

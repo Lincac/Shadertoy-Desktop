@@ -4,7 +4,8 @@
     right: 0;
     bottom: 0;
     color: black;
-    font: bold;
+    /* 勿用 font: bold 简写：在 RmlUi 里会影响子级 textarea 的字体解析，导致有内容但整片空白 */
+    font-weight: bold;
     width: 760dp;
     padding-top: 1dp;
     padding-bottom: 0dp;
@@ -179,10 +180,13 @@ textarea.buffer_pass_code_editor {
     height: 100%;
     min-height: 48dp;
     box-sizing: border-box;
-    font-size: 11dp;
+    font-size: 12dp;
     font-weight: normal;
-    font-family: monospace;
-    color: #1a1a1a;
+    font-style: normal;
+    /* 与 app_ui 中 LoadFontFace 一致：未注册 generic「monospace」时字形不绘制，表现为有字数但空白 */
+    font-family: LatoLatin;
+    line-height: 15dp;
+    color: #111111;
     background-color: #f6f6f6;
     border: 1dp #a8a8a8;
     padding: 4dp;
