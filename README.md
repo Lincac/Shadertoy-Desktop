@@ -5,7 +5,7 @@
 </p>
 
 ## Why?
-Desktop Shadertoy is a desktop client application for Shadertoy projects, allowing enthusiasts to open Shadertoys in profilers and graphics debuggers like Renderdoc or NVIDIA NSight.
+Desktop Shadertoy is a desktop client application for Shadertoy projects, allowing enthusiasts to open Shadertoys in profilers and graphics debuggers like Renderdoc or NVIDIA NSight.(For details, please refer to the original author. This fork only fixes the issue of Windows not starting and also modifies the interface style)
 
 ## Features
 Desktop Shadertoy is absolutely a work in progress but it already supports multi-pass shaders such as [this](https://www.shadertoy.com/view/msG3zG) or [this](https://www.shadertoy.com/view/stVfWc).
