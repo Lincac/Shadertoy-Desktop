@@ -1201,23 +1201,25 @@ void BufferPanel::reload_json() {
 
         auto &inputs = renderpass["inputs"];
 
-        if (renderpass["type"] == "common") {
+        auto const is_common = renderpass["type"] == "common";
+
+        if (editor_wrap != nullptr) {
+            editor_wrap->RemoveAttribute("style");
+        }
+        if (is_common) {
             datagrid->SetAttribute("style", "display: none;");
-            if (editor_wrap != nullptr) {
-                editor_wrap->SetAttribute("style", "display: none;");
-            }
         } else {
-            if (editor_wrap != nullptr) {
-                editor_wrap->RemoveAttribute("style");
-            }
-            if (pass_code_ta != nullptr) {
-                pass_code_ta->SetAttribute("data-pass", Rml::String(name.c_str()));
-                pass_code_ta->AddEventListener(Rml::EventId::Change, &pass_code_change_listener);
-                auto code = resolve_pass_code(renderpass);
-                replace_all(code, "\\n", "\n");
-                pass_code_ta->SetValue(Rml::String(code.c_str()));
-                set_code_stats_for_textarea(pass_code_ta);
-            }
+            datagrid->RemoveAttribute("style");
+        }
+        if (pass_code_ta != nullptr) {
+            pass_code_ta->SetAttribute("data-pass", Rml::String(name.c_str()));
+            pass_code_ta->AddEventListener(Rml::EventId::Change, &pass_code_change_listener);
+            auto code = resolve_pass_code(renderpass);
+            replace_all(code, "\\n", "\n");
+            pass_code_ta->SetValue(Rml::String(code.c_str()));
+            set_code_stats_for_textarea(pass_code_ta);
+        }
+        if (!is_common) {
             // buffer_panel.rml：每通道一列后接 buffer_ch_spacer，故 0→0、1→2、2→4、3→6
             for (auto channel_i = 0; channel_i < 4; ++channel_i) {
                 auto *datagrid_column = datagrid_header->GetChild(channel_i * 2);
@@ -1309,10 +1311,10 @@ void BufferPanel::reload_json() {
                     ichannel_label_settings->SetAttribute("style", "display: none;");
                 }
             }
+        }
 
-            if (name == "Image") {
-                tabs_element->SetActiveTab(tab_index);
-            }
+        if (name == "Image") {
+            tabs_element->SetActiveTab(tab_index);
         }
 
         ++tab_index;
