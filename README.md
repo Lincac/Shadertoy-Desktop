@@ -32,6 +32,50 @@ Some shadertoys use GLSL that is not compliant with Vulkan GLSL, and so Desktop 
 ## Future Plans
 I currently don't have plans on supporting Audio passes, however this would be a welcome and interesting PR if anyone was super passionate about it.
 
+## Building
+
+Dependencies (GLFW, RmlUi, Vulkan, Boost, OpenSSL, and others) are managed by [vcpkg](https://github.com/microsoft/vcpkg) through the manifest file `vcpkg.json`. You do **not** need to download or install GLFW (or other libraries) manually.
+
+### Prerequisites
+
+- CMake 3.21 or newer
+- Git
+- A C++20 compiler (Visual Studio 2022, Clang, or GCC)
+- [Vulkan SDK](https://vulkan.lunarg.com/) (headers and loader)
+
+### Get the source
+
+```bash
+git clone --recurse-submodules https://github.com/GabeRundlett/desktop-shadertoy.git
+cd desktop-shadertoy
+```
+
+If you already cloned without submodules, run `git submodule update --init`.
+
+### Configure and build
+
+On the first configure, CMake will clone vcpkg into the project directory (if needed) and build all dependencies listed in `vcpkg.json`. This can take a while.
+
+**Recommended — CMake Presets** (Ninja or Visual Studio):
+
+```bash
+cmake --preset vs-x86_64-windows-msvc    # Windows, Visual Studio generator
+cmake --build --preset cl-x86_64-windows-msvc-release
+```
+
+Other presets are listed in `CMakePresets.json` (Clang/GCC on Windows and Linux).
+
+**CMake GUI:** set the source directory to the repo root and pick a build directory. Click *Configure* — vcpkg is enabled automatically; no extra paths for GLFW are required.
+
+**Manual configure:**
+
+```bash
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+The executable is `desktop-shadertoy` (or `desktop-shadertoy.exe` on Windows) inside the build output directory.
+
 ## Platforms
 Desktop Shadertoy is supported on Windows and Linux
 

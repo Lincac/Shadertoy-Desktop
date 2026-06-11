@@ -12,7 +12,6 @@
             "binaryDir": "${sourceDir}/.out/${presetName}",
             "generator": "Ninja Multi-Config",
             "cacheVariables": {
-                "DESKTOP_SHADERTOY_USE_VCPKG": true,
                 "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/vcpkg_triplets"
             }
         },

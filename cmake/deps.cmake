@@ -17,9 +17,8 @@ else()
         COMMAND_ERROR_IS_FATAL ANY)
 endif()
 
-if(DESKTOP_SHADERTOY_USE_VCPKG)
-    if(UNIX AND NOT APPLE)
-        list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_LIST_DIR}/overlay-ports/openssl")
-    endif()
-    include("${CMAKE_CURRENT_LIST_DIR}/vcpkg.cmake")
+# Third-party libraries (GLFW, RmlUi, Vulkan, etc.) are provided via vcpkg manifest (vcpkg.json).
+if(UNIX AND NOT APPLE)
+    list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_LIST_DIR}/overlay-ports/openssl")
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/vcpkg.cmake")
