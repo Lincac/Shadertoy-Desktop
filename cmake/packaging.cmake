@@ -2,14 +2,14 @@ set(APPDIR_PATH "${CMAKE_BINARY_DIR}/appimage/AppDir")
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION ".")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/media" DESTINATION "." PATTERN ".git" EXCLUDE)
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/ui/icon/" DESTINATION "src/ui/icon")
 install(
     DIRECTORY "${CMAKE_SOURCE_DIR}/src"
     DESTINATION "."
     FILES_MATCHING
     PATTERN "*.glsl"
     PATTERN "*.inl"
-    PATTERN "*.rcss"
-    PATTERN "*.rml"
+    PATTERN "rml" EXCLUDE
 )
 install(FILES "${CMAKE_SOURCE_DIR}/deps/Daxa/include/daxa/daxa.inl" "${CMAKE_SOURCE_DIR}/deps/Daxa/include/daxa/daxa.glsl" DESTINATION "src/daxa")
 install(FILES "${CMAKE_SOURCE_DIR}/deps/Daxa/include/daxa/utils/task_graph.inl" DESTINATION "src/daxa/utils")

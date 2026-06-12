@@ -34,7 +34,7 @@ I currently don't have plans on supporting Audio passes, however this would be a
 
 ## Building
 
-Dependencies (GLFW, RmlUi, Vulkan, Boost, OpenSSL, and others) are managed by [vcpkg](https://github.com/microsoft/vcpkg) through the manifest file `vcpkg.json`. You do **not** need to download or install GLFW (or other libraries) manually.
+Dependencies (GLFW, ImGui, Vulkan, Boost, OpenSSL, and others) are managed by [vcpkg](https://github.com/microsoft/vcpkg) through the manifest file `vcpkg.json`. You do **not** need to download or install GLFW (or other libraries) manually.
 
 ### Prerequisites
 
@@ -56,12 +56,14 @@ If you already cloned without submodules, run `git submodule update --init`.
 
 On the first configure, CMake will clone vcpkg into the project directory (if needed) and build all dependencies listed in `vcpkg.json`. This can take a while.
 
-**Recommended — CMake Presets** (Ninja or Visual Studio):
+**Recommended — CMake Presets** (Visual Studio on Windows; Ninja on Linux):
 
 ```bash
-cmake --preset vs-x86_64-windows-msvc    # Windows, Visual Studio generator
-cmake --build --preset cl-x86_64-windows-msvc-release
+cmake --preset vs-x86_64-windows-msvc
+cmake --build --preset vs-x86_64-windows-msvc-release
 ```
+
+On Windows, presets default to the Visual Studio 2022 generator. Install [Ninja](https://ninja-build.org/) only if you use the `ninja-x86_64-windows-msvc` preset.
 
 Other presets are listed in `CMakePresets.json` (Clang/GCC on Windows and Linux).
 

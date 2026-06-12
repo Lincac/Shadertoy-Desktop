@@ -1,6 +1,6 @@
 {
   "name": "desktop-shadertoy",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Desktop Shadertoy",
   "homepage": "https://github.com/GabeRundlett/desktop-shadertoy",
   "dependencies": [
@@ -14,12 +14,17 @@
 
     "glfw3",
     "fmt",
-    "rmlui",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "vulkan-binding"
+      ]
+    },
     "openssl",
     "boost-asio",
     "boost-beast",
-    "nativefiledialog",
-    "efsw"
+    "nativefiledialog"
   ],
   "builtin-baseline": "b346ee32f13f3bf2ef19ac02f982f6938f7a84ea",
   "vcpkg-configuration": {

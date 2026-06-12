@@ -1,12 +1,13 @@
 #pragma once
 
+#include <functional>
 #include <memory>
-#include <utility>
+#include <span>
 
 #include <daxa/daxa.hpp>
 #include <GLFW/glfw3.h>
 
-#include <rml/system_glfw.hpp>
+#include <ui/layout.hpp>
 
 struct AppWindow {
     std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)> glfw_window{nullptr, &glfwDestroyWindow};
@@ -20,19 +21,18 @@ struct AppWindow {
 
     FullscreenCache fullscreen_cache{};
 
-    int glfw_active_modifiers{};
-    Rml::Context *rml_context{};
+    ui_layout::Layout layout{};
+    bool layout_fullscreen = false;
 
     std::function<void()> on_resize{};
     std::function<void()> on_close{};
     std::function<void(float, float)> on_mouse_move{};
-    std::function<void(float, float)> on_mouse_scroll{};
     std::function<void(int32_t, int32_t)> on_mouse_button{};
     std::function<void(int32_t, int32_t)> on_key{};
     std::function<void(std::span<char const *>)> on_drop{};
 
-    using RmlKeyDownCallback = std::function<bool(Rml::Context *context, Rml::Input::KeyIdentifier key, int key_modifier, int glfw_action, float native_dp_ratio, bool priority)>;
-    RmlKeyDownCallback key_down_callback{};
+    /** 返回 true 表示事件未被 ImGui 消费，可转发给 viewport */
+    std::function<bool(int glfw_key, int glfw_action, int glfw_mods)> on_global_key{};
 
     AppWindow() = default;
     explicit AppWindow(daxa::Device device, daxa_i32vec2 size);
@@ -40,4 +40,8 @@ struct AppWindow {
     void update();
     void set_fullscreen(bool is_fullscreen);
     void set_vsync(bool enabled);
+
+    [[nodiscard]] auto should_forward_viewport_input() const -> bool;
+
+    void sync_layout_from_window();
 };

@@ -76,6 +76,8 @@ struct Viewport {
 
     bool first_record_after_load{};
     bool load_failed{};
+    std::string last_compile_error{};
+    bool gpu_shutdown_done = false;
 
     explicit Viewport(daxa::Device a_daxa_device);
     ~Viewport();
@@ -94,6 +96,8 @@ struct Viewport {
     void on_mouse_button(int32_t button_id, int32_t action);
     void on_key(int32_t key_id, int32_t action);
     void on_toggle_pause(bool is_paused);
+
+    void shutdown();
 
     auto load_texture(std::string path) -> std::pair<daxa::ImageId, size_t>;
     auto load_cube_texture(std::string path) -> std::pair<daxa::ImageId, size_t>;

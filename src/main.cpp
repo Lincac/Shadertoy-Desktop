@@ -1,17 +1,15 @@
 #include <app/viewport.hpp>
 #include <app/resources.hpp>
 
-#include <chrono>
 #include <cstdint>
+#include <iostream>
+
 #include <daxa/daxa.hpp>
 #include <daxa/utils/pipeline_manager.hpp>
 #include <daxa/utils/task_graph.hpp>
 
-#include <fmt/format.h>
-
 #include <ui/app_ui.hpp>
-
-#include <stb_image.h>
+#include <ui/layout.hpp>
 
 #include <fstream>
 
@@ -31,31 +29,16 @@
 #pragma warning(pop)
 #endif
 
-#include <cmath>
-#include <iostream>
-#include <format>
-using Clock = std::chrono::high_resolution_clock;
-
-struct Timer {
-    Clock::time_point start;
-    std::string name;
-    Timer(std::string const &name) : name{name} { start = Clock::now(); }
-    ~Timer() {
-        auto end = Clock::now();
-        std::cout << std::format("[{}] {}\n", name, std::chrono::duration<double>(end - start).count()) << std::flush;
-    }
-};
-
 struct ShaderApp {
     daxa::Instance daxa_instance;
     daxa::Device daxa_device;
+    // ui / viewport 持有 Device 副本；TaskGraph 持有 Swapchain 副本。
+    // 声明顺序决定逆序析构：先 TaskGraph，再 UI/Viewport，最后 Device。
     AppUi ui;
-    daxa::TaskGraph main_task_graph;
-    daxa::TaskImage task_swapchain_image;
-
     Viewport viewport;
+    daxa::TaskImage task_swapchain_image;
+    daxa::TaskGraph main_task_graph;
 
-    /// Last RML client size used to decide task graph re-record; x < 0 means not yet recorded.
     daxa_f32vec2 recorded_viewport_client{-1.f, -1.f};
 
     ShaderApp();
@@ -70,17 +53,16 @@ struct ShaderApp {
     auto should_close() -> bool;
     void render();
     void download_shadertoy(std::string const &input);
+    void reload_shaders_from_panel();
     auto record_main_task_graph() -> daxa::TaskGraph;
-};
 
-std::ofstream *f_ptr = nullptr;
+    [[nodiscard]] auto effective_viewport_size() const -> daxa_f32vec2;
+    void rebuild_task_graph_if_ready();
+};
 
 namespace core {
     void log_error(std::string const &msg) {
-        Rml::Log::Message(Rml::Log::LT_ERROR, "%s", msg.c_str());
-        if (!f_ptr)
-            return;
-        (*f_ptr) << msg << std::endl;
+        std::cerr << msg << std::endl;
     }
 } // namespace core
 
@@ -99,8 +81,6 @@ void search_for_path_to_fix_working_directory(std::span<std::filesystem::path co
         current_path = current_path.parent_path();
     }
 }
-
-#include "thread_pool.hpp"
 
 char const *shaderToyDomain = "www.shadertoy.com";
 char const *shaderToyPort = "443";
@@ -155,150 +135,10 @@ auto download_shadertoy_json_from_id_or_url(std::string const &input, ShadertoyA
     return nlohmann::json::parse(api.request("/api/v1/shaders/" + shader_id + "?key=" + shaderToyKey));
 }
 
-using namespace std::literals;
-
-void test_func(std::string const &id) {
-    thread_local ShadertoyApi shadertoy_api{};
-
-    auto t = Timer(id);
-    auto shader_json = download_shadertoy_json_from_id_or_url(id, shadertoy_api);
-    auto f = std::ofstream("shaders/" + id + ".json");
-    f << std::setw(4) << shader_json;
-    std::this_thread::sleep_for(1s);
-}
-
-void download_all_shadertoys() {
-    nlohmann::json json;
-    {
-        auto shadertoy_api = ShadertoyApi{};
-
-        auto result_str = std::string{};
-        {
-            Timer t0("load");
-            result_str = shadertoy_api.request(std::string("/api/v1/shaders?key=") + shaderToyKey);
-        }
-        json = nlohmann::json::parse(result_str);
-        auto f = std::ofstream("test2.json");
-        f << std::setw(4) << json;
-    }
-
-    // nlohmann::json json = nlohmann::json::parse(std::ifstream("test.json"));
-
-    auto shader_count = int(json["Shaders"]);
-    auto results = json["Results"];
-
-    ThreadPool thread_pool;
-    thread_pool.start();
-
-    for (int i = 0; i < shader_count; ++i) {
-        std::string shader_id = results[i];
-        if (!std::filesystem::exists("shaders/" + shader_id + ".json")) {
-            thread_pool.enqueue([=]() { test_func(shader_id); });
-        }
-        if ((i % 100) == 0) {
-            std::cout << std::format("{} done\n", i) << std::flush;
-        }
-    }
-
-    while (thread_pool.busy()) {
-        std::this_thread::sleep_for(1s);
-    }
-    thread_pool.stop();
-}
-
-void test_all_shadertoys() {
-    auto dir_iter = std::filesystem::directory_iterator{"shaders"};
-
-    int shaders_tested = 0;
-    int shaders_failed = 0;
-
-    auto black_list = std::array{
-        std::string{"4ttyzn.json"},
-        std::string{"7dsBRM.json"},
-        std::string{"clyBzc.json"},
-        std::string{"DdlSWr.json"},
-        std::string{"flBGDy.json"},
-        std::string{"Mlcczs.json"},
-        std::string{"stf3Dj.json"},
-        std::string{"ttGGDz.json"},
-        std::string{"ttjSR3.json"},
-        std::string{"wsKyRc.json"},
-        std::string{"Xlcczj.json"},
-    };
-
-    auto f = std::ofstream("compilation.txt", std::ios_base::app);
-    auto f2 = std::ofstream("compilation-times.txt", std::ios_base::app);
-    f_ptr = &f;
-
-    auto app = ShaderApp();
-    while (true) {
-        auto t0 = Clock::now();
-        std::filesystem::path path;
-        ++shaders_tested;
-        if (!(dir_iter == std::default_sentinel_t{})) {
-            auto const &dir_entry = *dir_iter;
-            path = dir_entry.path();
-            ++dir_iter;
-        } else {
-            break;
-        }
-
-        // if (shaders_tested <= black_list.back()) {
-        //     continue;
-        // }
-        // if (shaders_tested <= 13576) {
-        //     continue;
-        // }
-
-        if (std::find(black_list.begin(), black_list.end(), path.filename()) != black_list.end()) {
-            continue;
-        }
-
-        auto json = nlohmann::json::parse(std::ifstream(path));
-        app.ui.buffer_panel.load_shadertoy_json(json);
-
-        std::cout << std::format("{}, // {}\n", shaders_tested, path.string()) << std::flush;
-        app.update();
-        if (app.should_close()) {
-            break;
-        }
-        auto t1 = Clock::now();
-        app.render();
-        auto t2 = Clock::now();
-
-        if (app.viewport.load_failed) {
-            ++shaders_failed;
-            f << std::format("{}: {}\n", shaders_tested, path.string());
-            f << std::format("[failed] ({}/{} or {}%)\n", shaders_failed, shaders_tested, float(shaders_failed) / float(shaders_tested) * 100) << std::flush;
-        } else {
-            auto d01 = std::chrono::duration<float>(t1 - t0).count();
-            auto d12 = std::chrono::duration<float>(t2 - t1).count();
-            auto d02 = std::chrono::duration<float>(t2 - t0).count();
-            f2 << std::format("{}, {}, {}, {}, {}\n", shaders_tested, path.string(), d01, d12, d02) << std::flush;
-        }
-
-        // try {
-        //     app.daxa_device.wait_idle();
-        // } catch (...) {
-        //     std::ofstream outfile;
-        //     outfile.open("device_lost.txt", std::ios_base::app);
-        //     outfile << std::format("{}, // {}\n", shaders_tested, path.string());
-        //     outfile.close();
-        //     std::terminate();
-        // }
-    }
-}
-
 auto main() -> int {
     search_for_path_to_fix_working_directory(std::array{
         std::filesystem::path{"media"},
     });
-
-    // download_all_shadertoys();
-    // return 0;
-
-    // test_all_shadertoys();
-    // return 0;
 
     auto app = ShaderApp();
     while (true) {
@@ -323,29 +163,9 @@ ShaderApp::ShaderApp()
       ui{daxa_device},
       viewport{daxa_device},
       task_swapchain_image{daxa::TaskImageInfo{.swapchain_image = true}} {
-    ui.app_window.on_resize = [&]() {
-        if (ui.app_window.size.x <= 0 || ui.app_window.size.y <= 0) {
-            return;
-        }
-        ui.rml_context->Update();
-        main_task_graph = record_main_task_graph();
-        {
-            auto const wr = ui.viewport_element->GetClientWidth();
-            auto const hr = ui.viewport_element->GetClientHeight();
-            if (wr >= 1.f && hr >= 1.f) {
-                recorded_viewport_client = {wr, hr};
-            } else {
-                recorded_viewport_client = {
-                    viewport.gpu_input.Resolution.x,
-                    viewport.gpu_input.Resolution.y,
-                };
-            }
-        }
-        render();
-    };
+    ui.app_window.on_resize = [&]() { rebuild_task_graph_if_ready(); };
     ui.app_window.on_drop = [&](std::span<char const *> paths) {
         ui.buffer_panel.load_shadertoy_json(nlohmann::json::parse(std::ifstream(paths[0])));
-        // set_project_filepath(paths[0]);
     };
     ui.app_window.on_mouse_move = std::bind(&Viewport::on_mouse_move, &viewport, std::placeholders::_1, std::placeholders::_2);
     ui.app_window.on_mouse_button = std::bind(&Viewport::on_mouse_button, &viewport, std::placeholders::_1, std::placeholders::_2);
@@ -356,36 +176,34 @@ ShaderApp::ShaderApp()
     ui.on_reset = std::bind(&Viewport::reset, &viewport);
     ui.on_toggle_pause = std::bind(&Viewport::on_toggle_pause, &viewport, std::placeholders::_1);
 
-    ui.on_toggle_fullscreen = [&](bool is_fullscreen) {
-        ui.app_window.set_fullscreen(is_fullscreen);
-        ui.rml_context->Update();
-        main_task_graph = record_main_task_graph();
-        {
-            auto const wr = ui.viewport_element->GetClientWidth();
-            auto const hr = ui.viewport_element->GetClientHeight();
-            if (wr >= 1.f && hr >= 1.f) {
-                recorded_viewport_client = {wr, hr};
-            } else {
-                recorded_viewport_client = {
-                    viewport.gpu_input.Resolution.x,
-                    viewport.gpu_input.Resolution.y,
-                };
-            }
-        }
+    ui.on_toggle_fullscreen = [&](bool /*is_fullscreen*/) {
+        ui.app_window.set_fullscreen(ui.is_fullscreen);
+        viewport.reset();
     };
 
-    ui.on_download = [&](Rml::String const &rml_input) {
-        download_shadertoy(rml_input);
+    ui.on_download = [&](std::string const &input) {
+        download_shadertoy(input);
     };
+
+    ui.buffer_panel.on_recompile = [this]() { reload_shaders_from_panel(); };
 
     ui.buffer_panel.load_shadertoy_json(nlohmann::json::parse(std::ifstream(resource_dir / "default-shader.json")));
+    reload_shaders_from_panel();
 }
 
 ShaderApp::~ShaderApp() {
-    if (ui.render_interface.crashed)
-        return;
+    daxa_device.wait_idle();
+    // TaskGraph 持有 Swapchain 引用，必须先于 UI Swapchain 释放。
+    main_task_graph = daxa::TaskGraph{};
+    task_swapchain_image = daxa::TaskImage{};
+    daxa_device.wait_idle();
+
+    viewport.shutdown();
+    ui.shutdown();
+
     daxa_device.wait_idle();
     daxa_device.collect_garbage();
+    daxa_device = {};
 }
 
 void ShaderApp::update() {
@@ -395,40 +213,71 @@ void ShaderApp::update() {
     ui.update(viewport.gpu_input.Time, viewport.last_known_fps);
 }
 
+void ShaderApp::reload_shaders_from_panel() {
+    ui.buffer_panel.sync_all_pass_codes_to_json();
+    viewport.load_shadertoy_json(ui.buffer_panel.get_shadertoy_json());
+    ui.buffer_panel.dirty = false;
+
+    if (!viewport.last_compile_error.empty()) {
+        ui.buffer_panel.compile_message = viewport.last_compile_error;
+        while (!ui.buffer_panel.compile_message.empty() &&
+               (ui.buffer_panel.compile_message.back() == '\n' || ui.buffer_panel.compile_message.back() == '\r')) {
+            ui.buffer_panel.compile_message.pop_back();
+        }
+        ui.buffer_panel.show_compile_error_dialog = true;
+    } else {
+        ui.buffer_panel.compile_message.clear();
+        ui.buffer_panel.show_compile_error_dialog = false;
+    }
+
+    if (ui.app_window.size.x <= 0 || ui.app_window.size.y <= 0) {
+        return;
+    }
+
+    rebuild_task_graph_if_ready();
+}
+
+auto ShaderApp::effective_viewport_size() const -> daxa_f32vec2 {
+    auto const layout = ui.get_layout();
+    if (ui.is_fullscreen) {
+        return {
+            static_cast<daxa_f32>(ui.app_window.size.x),
+            static_cast<daxa_f32>(ui.app_window.size.y),
+        };
+    }
+    return {layout.viewport_width(), layout.viewport_height()};
+}
+
+void ShaderApp::rebuild_task_graph_if_ready() {
+    if (ui.app_window.size.x <= 0 || ui.app_window.size.y <= 0) {
+        recorded_viewport_client = {-1.f, -1.f};
+        return;
+    }
+    main_task_graph = record_main_task_graph();
+    recorded_viewport_client = effective_viewport_size();
+}
+
 void ShaderApp::render() {
     auto &app_window = ui.app_window;
     if (app_window.size.x <= 0 || app_window.size.y <= 0) {
         return;
     }
-    ui.rml_context->Update();
 
-    bool const shader_reload = ui.buffer_panel.dirty;
-    if (shader_reload) {
-        viewport.load_shadertoy_json(ui.buffer_panel.get_shadertoy_json());
-        ui.rml_context->Update();
-        ui.buffer_panel.dirty = false;
+    if (ui.buffer_panel.dirty) {
+        reload_shaders_from_panel();
     }
 
-    auto const cur_rml_vp = daxa_f32vec2{
-        ui.viewport_element->GetClientWidth(),
-        ui.viewport_element->GetClientHeight(),
-    };
-    bool const rml_vp_ready = cur_rml_vp.x >= 1.f && cur_rml_vp.y >= 1.f;
+    auto const cur_vp = effective_viewport_size();
+    bool const vp_ready = cur_vp.x >= 1.f && cur_vp.y >= 1.f;
     bool const recorded_valid = recorded_viewport_client.x >= 0.f;
     bool const need_record =
-        shader_reload ||
         !recorded_valid ||
-        (rml_vp_ready && (std::abs(cur_rml_vp.x - recorded_viewport_client.x) > 0.5f ||
-                          std::abs(cur_rml_vp.y - recorded_viewport_client.y) > 0.5f));
+        (vp_ready && (std::abs(cur_vp.x - recorded_viewport_client.x) > 0.5f ||
+                      std::abs(cur_vp.y - recorded_viewport_client.y) > 0.5f));
     if (need_record) {
         main_task_graph = record_main_task_graph();
-        if (rml_vp_ready) {
-            recorded_viewport_client = cur_rml_vp;
-        } else {
-            recorded_viewport_client = {
-                viewport.gpu_input.Resolution.x,
-                viewport.gpu_input.Resolution.y,
-            };
+        if (vp_ready) {
+            recorded_viewport_client = cur_vp;
         }
     }
 
@@ -438,12 +287,18 @@ void ShaderApp::render() {
     }
     task_swapchain_image.set_images({.images = {&swapchain_image, 1}});
 
-    viewport.render();
+    if (ui.paused) {
+        viewport.gpu_input.TimeDelta = 0.f;
+    } else {
+        viewport.render();
+    }
 
     main_task_graph.execute({});
     daxa_device.collect_garbage();
 
-    ++viewport.gpu_input.Frame;
+    if (!ui.paused) {
+        ++viewport.gpu_input.Frame;
+    }
 }
 
 auto ShaderApp::should_close() -> bool {
@@ -473,41 +328,10 @@ void ShaderApp::download_shadertoy(std::string const &input) {
 }
 
 auto ShaderApp::record_main_task_graph() -> daxa::TaskGraph {
-    auto viewport_size = daxa_f32vec2(ui.viewport_element->GetClientWidth(), ui.viewport_element->GetClientHeight());
-    if (ui.is_fullscreen) {
-        viewport_size = daxa_f32vec2{
-            static_cast<daxa_f32>(ui.app_window.size.x),
-            static_cast<daxa_f32>(ui.app_window.size.y),
-        };
-    } else if (viewport_size.x < 1.f || viewport_size.y < 1.f) {
-        auto const win_w = static_cast<float>(ui.app_window.size.x);
-        auto const win_h = static_cast<float>(ui.app_window.size.y);
-        auto *doc = ui.viewport_element->GetOwnerDocument();
-        if (doc != nullptr) {
-            auto *mc = doc->GetElementById("main_column");
-            auto *bp = doc->GetElementById("buffer_panel");
-            auto const mc_w = mc ? mc->GetClientWidth() : 0.f;
-            auto const mc_h = mc ? mc->GetClientHeight() : 0.f;
-            auto const bp_w = bp ? bp->GetClientWidth() : 0.f;
-            if (viewport_size.x < 1.f) {
-                if (mc_w >= 1.f) {
-                    viewport_size.x = mc_w;
-                } else if (bp_w >= 1.f) {
-                    viewport_size.x = (std::max)(1.f, win_w - bp_w);
-                } else {
-                    viewport_size.x = (std::max)(1.f, win_w * 0.5f);
-                }
-            }
-            if (viewport_size.y < 1.f) {
-                constexpr float k_bottom_bar = 30.f;
-                if (mc_h >= 1.f + k_bottom_bar) {
-                    viewport_size.y = (std::max)(1.f, mc_h - k_bottom_bar);
-                } else {
-                    viewport_size.y = (std::max)(1.f, win_h - k_bottom_bar);
-                }
-            }
-        }
-    }
+    auto const layout = ui.get_layout();
+    auto const viewport_size = effective_viewport_size();
+    auto const is_fullscreen = ui.is_fullscreen;
+
     viewport.gpu_input.Resolution = daxa_f32vec3{
         static_cast<daxa_f32>(viewport_size.x),
         static_cast<daxa_f32>(viewport_size.y),
@@ -553,7 +377,7 @@ auto ShaderApp::record_main_task_graph() -> daxa::TaskGraph {
             daxa::inl_attachment(daxa::TaskImageAccess::TRANSFER_READ, daxa::ImageViewType::REGULAR_2D, viewport_render_image),
             daxa::inl_attachment(daxa::TaskImageAccess::TRANSFER_WRITE, daxa::ImageViewType::REGULAR_2D, task_swapchain_image),
         },
-        .task = [viewport_render_image, viewport_size, this](daxa::TaskInterface const &ti) {
+        .task = [this, viewport_render_image, viewport_size, layout, is_fullscreen](daxa::TaskInterface const &ti) {
             auto &recorder = ti.recorder;
             auto const image_size = ti.device.image_info(ti.get(viewport_render_image).ids[0]).value().size;
             auto const sw = static_cast<int32_t>(image_size.x);
@@ -561,18 +385,28 @@ auto ShaderApp::record_main_task_graph() -> daxa::TaskGraph {
             if (sw <= 0 || sh <= 0) {
                 return;
             }
-            auto viewport_pos0 = daxa_f32vec2{
-                ui.viewport_element->GetAbsoluteLeft() + ui.viewport_element->GetClientLeft(),
-                ui.viewport_element->GetAbsoluteTop() + ui.viewport_element->GetClientTop(),
-            };
-            auto viewport_pos1 = daxa_f32vec2{viewport_pos0.x + viewport_size.x, viewport_pos0.y + viewport_size.y};
+            std::array<daxa::Offset3D, 2> dst_offsets{};
+            if (is_fullscreen) {
+                auto const swapchain_size = ti.device.image_info(ti.get(task_swapchain_image).ids[0]).value().size;
+                dst_offsets = {
+                    daxa::Offset3D{0, 0, 0},
+                    daxa::Offset3D{static_cast<daxa::i32>(swapchain_size.x), static_cast<daxa::i32>(swapchain_size.y), 1},
+                };
+            } else {
+                auto const vp_pos = layout.viewport_pos();
+                auto const viewport_pos1 = daxa_f32vec2{vp_pos.x + viewport_size.x, vp_pos.y + viewport_size.y};
+                dst_offsets = {
+                    daxa::Offset3D{static_cast<daxa::i32>(vp_pos.x), static_cast<daxa::i32>(vp_pos.y), 0},
+                    daxa::Offset3D{static_cast<daxa::i32>(viewport_pos1.x), static_cast<daxa::i32>(viewport_pos1.y), 1},
+                };
+            }
             recorder.blit_image_to_image({
                 .src_image = ti.get(viewport_render_image).ids[0],
                 .src_image_layout = ti.get(viewport_render_image).layout,
                 .dst_image = ti.get(task_swapchain_image).ids[0],
                 .dst_image_layout = ti.get(task_swapchain_image).layout,
                 .src_offsets = {{{0, sh, 0}, {sw, 0, 1}}},
-                .dst_offsets = {{{static_cast<int32_t>(viewport_pos0.x), static_cast<int32_t>(viewport_pos0.y), 0}, {static_cast<int32_t>(viewport_pos1.x), static_cast<int32_t>(viewport_pos1.y), 1}}},
+                .dst_offsets = dst_offsets,
                 .filter = daxa::Filter::LINEAR,
             });
         },

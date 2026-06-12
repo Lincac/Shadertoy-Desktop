@@ -12,12 +12,17 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/media")
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMAND_ERROR_IS_FATAL ANY)
 else()
-    execute_process(COMMAND ${GIT_EXECUTABLE} pull
+    execute_process(COMMAND ${GIT_EXECUTABLE} pull --ff-only
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/media
-        COMMAND_ERROR_IS_FATAL ANY)
+        RESULT_VARIABLE _media_git_pull_result
+        ERROR_QUIET
+        OUTPUT_QUIET)
+    if(NOT _media_git_pull_result EQUAL 0)
+        message(STATUS "media: skipped git pull (offline or already up to date)")
+    endif()
 endif()
 
-# Third-party libraries (GLFW, RmlUi, Vulkan, etc.) are provided via vcpkg manifest (vcpkg.json).
+# Third-party libraries (GLFW, ImGui, Vulkan, etc.) are provided via vcpkg manifest (vcpkg.json).
 if(UNIX AND NOT APPLE)
     list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_LIST_DIR}/overlay-ports/openssl")
 endif()

@@ -1,39 +1,28 @@
 #include "buffer_panel.hpp"
 
-#include <RmlUi/Core.h>
-#include <RmlUi/Core/Context.h>
-#include <RmlUi/Core/Element.h>
-#include <RmlUi/Core/ElementDocument.h>
-#include <RmlUi/Core/ElementText.h>
-#include <RmlUi/Core/Elements/ElementFormControlTextArea.h>
-#include <RmlUi/Core/Elements/ElementTabSet.h>
-#include <RmlUi/Core/Event.h>
-#include <RmlUi/Core/ID.h>
-#include <RmlUi/Core/Input.h>
-#include <RmlUi/Debugger.h>
+#include <app/resources.hpp>
+#include <ui/app_ui.hpp>
+#include <ui/layout.hpp>
+#include <ui/ui_theme.hpp>
+
+#include <imgui.h>
+
+#include <stb_image.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
-
-#include <ui/app_ui.hpp>
-
+#include <functional>
+#include <iomanip>
 #include <fmt/format.h>
-#include <efsw/efsw.hpp>
 
 void replace_all(std::string &s, std::string const &toReplace, std::string const &replaceWith, bool wordBoundary = false);
 
-struct BufferFileEditState {
-    std::string name;
-    std::filesystem::path path;
-    std::atomic_bool modified = false;
-
-    ~BufferFileEditState();
-};
-
 namespace {
 
-    /** Shadertoy 新建着色器风格的默认片段（与官网空白工程常见模板一致） */
-    static auto default_glsl_code_for_pass_type(std::string const &pass_type) -> std::string {
+    auto default_glsl_code_for_pass_type(std::string const &pass_type) -> std::string {
         if (pass_type == "common") {
             return "vec4 someFunction( vec4 a, float b )\n{\n    return a+b;\n}";
         }
@@ -43,7 +32,6 @@ namespace {
                    "    fragColor = vec4(col,1.0);\n"
                    "}\n";
         }
-        /* buffer / image / sound / volume 等：mainImage 余弦色带 */
         return "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n"
                "    vec2 uv = fragCoord/iResolution.xy;\n"
                "    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));\n"
@@ -51,7 +39,7 @@ namespace {
                "}\n";
     }
 
-    static auto resolve_pass_code(nlohmann::json &renderpass) -> std::string {
+    auto resolve_pass_code(nlohmann::json &renderpass) -> std::string {
         std::string pass_type = "image";
         if (renderpass.contains("type") && renderpass["type"].is_string()) {
             pass_type = renderpass["type"].get<std::string>();
@@ -67,179 +55,9 @@ namespace {
         return code;
     }
 
-    class BufferPanelEventListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            switch (event.GetId()) {
-            case Rml::EventId::Mouseup: {
-                auto *element = event.GetTargetElement();
-                auto const &element_id = element->GetId();
-                if (element_id.starts_with("ichannel")) {
-                    if (element_id == "ichannel0_img" ||
-                        element_id == "ichannel1_img" ||
-                        element_id == "ichannel2_img" ||
-                        element_id == "ichannel3_img") {
-                        // Show input selection window
-                        AppUi::s_instance->buffer_panel.open_ichannel_img_element = element;
-                        auto *bpiw_element = AppUi::s_instance->buffer_panel.bpiw_element;
-                        bpiw_element->SetProperty("display", "block");
-                        bpiw_element->Focus();
-                    }
-                }
-            } break;
-            default: break;
-            }
-        }
-    };
-    BufferPanelEventListener buffer_panel_event_listener;
-
-    static auto element_is_or_contains_ancestor(Rml::Element *ancestor, Rml::Element *node) -> bool {
-        if (ancestor == nullptr || node == nullptr) {
-            return false;
-        }
-        for (auto *p = node; p != nullptr; p = p->GetParentNode()) {
-            if (p == ancestor) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    class BpiwEventListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            switch (event.GetId()) {
-            case Rml::EventId::Blur: {
-                auto &panel = AppUi::s_instance->buffer_panel;
-                if (panel.bpiw_dragging) {
-                    break;
-                }
-                auto *bpiw_el = panel.bpiw_element;
-                if (bpiw_el == nullptr) {
-                    break;
-                }
-                /* 焦点移到 #bpiw 内部子节点时仍会触发 #bpiw 的 Blur；勿关闭，否则后续 onclick 无法应用选择。 */
-                if (auto *doc = bpiw_el->GetOwnerDocument(); doc != nullptr) {
-                    if (auto *ctx = doc->GetContext(); ctx != nullptr) {
-                        if (element_is_or_contains_ancestor(bpiw_el, ctx->GetFocusElement())) {
-                            break;
-                        }
-                    }
-                }
-                bpiw_el->SetProperty("display", "none");
-                /* 勿在此清空 open_ichannel_img_element：Blur 常先于选项的 onclick，清空会导致无法写入对应 iChannel。 */
-            } break;
-            default: break;
-            }
-        }
-    };
-    BpiwEventListener bpiw_event_listener;
-
-    static auto bpiw_target_is_close_tree(Rml::Element *target) -> bool {
-        for (auto *el = target; el != nullptr; el = el->GetParentNode()) {
-            if (el->GetId() == "bpiw_close") {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    class BpiwHeaderDragListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            if (event.GetId() != Rml::EventId::Mousedown) {
-                return;
-            }
-            if (event.GetParameter("button", 0) != 0) {
-                return;
-            }
-            if (bpiw_target_is_close_tree(event.GetTargetElement())) {
-                return;
-            }
-            auto &panel = AppUi::s_instance->buffer_panel;
-            auto *bw = panel.bpiw_element;
-            if (bw == nullptr) {
-                return;
-            }
-            auto const pos = bw->GetAbsoluteOffset();
-            auto const mx = event.GetParameter("mouse_x", 0.0f);
-            auto const my = event.GetParameter("mouse_y", 0.0f);
-            panel.bpiw_drag_grab_mx = mx - pos.x;
-            panel.bpiw_drag_grab_my = my - pos.y;
-            panel.bpiw_dragging = true;
-        }
-    };
-    BpiwHeaderDragListener bpiw_header_drag_listener;
-
-    class BpiwScreenDragListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            auto &panel = AppUi::s_instance->buffer_panel;
-            switch (event.GetId()) {
-            case Rml::EventId::Mousemove: {
-                if (!panel.bpiw_dragging || panel.bpiw_element == nullptr) {
-                    return;
-                }
-                auto *bw = panel.bpiw_element;
-                auto *ctx = bw->GetContext();
-                if (ctx == nullptr) {
-                    return;
-                }
-                auto const mx = event.GetParameter("mouse_x", 0.0f);
-                auto const my = event.GetParameter("mouse_y", 0.0f);
-                float nl = mx - panel.bpiw_drag_grab_mx;
-                float nt = my - panel.bpiw_drag_grab_my;
-                auto const dim = ctx->GetDimensions();
-                auto const sz = bw->GetBox().GetSize(Rml::Box::BORDER);
-                float const max_x = float(dim.x) - sz.x;
-                float const max_y = float(dim.y) - sz.y;
-                nl = std::max(0.f, std::min(nl, max_x));
-                nt = std::max(0.f, std::min(nt, max_y));
-                auto const left_s = fmt::format("{:.0f}px", nl);
-                auto const top_s = fmt::format("{:.0f}px", nt);
-                (void)bw->SetProperty("left", Rml::String(left_s.c_str()));
-                (void)bw->SetProperty("top", Rml::String(top_s.c_str()));
-            } break;
-            case Rml::EventId::Mouseup: {
-                panel.bpiw_dragging = false;
-            } break;
-            default: break;
-            }
-        }
-    };
-    BpiwScreenDragListener bpiw_screen_drag_listener;
-
-    class BufferPanelAddOptionsEventListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            switch (event.GetId()) {
-            case Rml::EventId::Blur: {
-                event.GetCurrentElement()->SetAttribute("style", "display: none;");
-            } break;
-            default: break;
-            }
-        }
-    };
-    BufferPanelAddOptionsEventListener buffer_panel_add_options_event_listener;
-
-    auto random_string(size_t length) -> std::string {
-        auto randchar = []() -> char {
-            const char charset[] =
-                "0123456789"
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                "abcdefghijklmnopqrstuvwxyz";
-            const size_t max_index = (sizeof(charset) - 1);
-            return charset[rand() % max_index];
-        };
-        std::string str(length, 0);
-        std::generate_n(str.begin(), length, randchar);
-        return str;
-    }
-
-    auto find_pass(std::string const &pass_name) -> nlohmann::json * {
-        auto &renderpasses = AppUi::s_instance->buffer_panel.json["renderpass"];
+    auto find_pass(nlohmann::json &root, std::string const &pass_name) -> nlohmann::json * {
+        auto &renderpasses = root["renderpass"];
         for (auto &renderpass : renderpasses) {
-            auto name = std::string{};
             if (renderpass["name"] == pass_name) {
                 return &renderpass;
             }
@@ -256,424 +74,626 @@ namespace {
         return nullptr;
     }
 
-    auto find_descendant_by_tag(Rml::Element *root, Rml::String const &tag) -> Rml::Element * {
-        if (root == nullptr) {
-            return nullptr;
-        }
-        if (root->GetTagName() == tag) {
-            return root;
-        }
-        for (int i = 0; i < root->GetNumChildren(); ++i) {
-            if (auto *found = find_descendant_by_tag(root->GetChild(i), tag)) {
-                return found;
-            }
-        }
-        return nullptr;
+    struct BpiwOption {
+        std::string label;
+        std::string img_path;
+        std::string resolution;
+        std::string format_info;
+    };
+
+    struct BpiwPreviewGpu {
+        daxa::ImageId image{};
+        daxa::SamplerId sampler{};
+        ImTextureID tex_id{};
+    };
+
+    auto bpiw_preview_cache() -> std::unordered_map<std::string, BpiwPreviewGpu> & {
+        static auto cache = std::unordered_map<std::string, BpiwPreviewGpu>{};
+        return cache;
     }
 
-    auto find_descendant_by_class(Rml::Element *root, Rml::String const &needle) -> Rml::Element * {
-        if (root == nullptr) {
-            return nullptr;
-        }
-        /* 勿用 substring：否则 "buffer_pass_code_editor" 会误匹配 "buffer_pass_code_editor_wrap" */
-        if (root->IsClassSet(needle)) {
-            return root;
-        }
-        for (int i = 0; i < root->GetNumChildren(); ++i) {
-            if (auto *found = find_descendant_by_class(root->GetChild(i), needle)) {
-                return found;
-            }
-        }
-        return nullptr;
+    auto upload_bpiw_preview(daxa::Device device, int width, int height, stbi_uc const *pixels) -> daxa::ImageId {
+        auto const upload_size = static_cast<daxa::u32>(width * height * 4);
+        auto image = device.create_image({
+            .size = {static_cast<daxa::u32>(width), static_cast<daxa::u32>(height), 1},
+            .usage = daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+            .name = "bpiw_preview",
+        });
+        auto staging = device.create_buffer({
+            .size = upload_size,
+            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
+            .name = "bpiw_preview_staging",
+        });
+        std::memcpy(device.buffer_host_address_as<daxa::u8>(staging).value(), pixels, upload_size);
+        auto recorder = device.create_command_recorder({.name = "bpiw_preview_upload"});
+        recorder.pipeline_barrier_image_transition({
+            .dst_access = daxa::AccessConsts::TRANSFER_READ_WRITE,
+            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
+            .image_id = image,
+        });
+        recorder.copy_buffer_to_image({
+            .buffer = staging,
+            .image = image,
+            .image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
+            .image_extent = {static_cast<daxa::u32>(width), static_cast<daxa::u32>(height), 1},
+        });
+        recorder.pipeline_barrier_image_transition({
+            .src_access = daxa::AccessConsts::TRANSFER_WRITE,
+            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
+            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
+            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
+            .image_id = image,
+        });
+        device.submit_commands({.command_lists = std::array{recorder.complete_current_commands()}});
+        device.wait_idle();
+        device.destroy_buffer(staging);
+        return image;
     }
 
-    /** 点击 bpiw_option 内任意处（含文字说明区）时，需从 Current/Target 向上定位选项块再取预览图 src。 */
-    auto bpiw_option_preview_img_from_click(Rml::Event &event) -> Rml::Element * {
-        auto const walk = [](Rml::Element *start) -> Rml::Element * {
-            for (auto *node = start; node != nullptr; node = node->GetParentNode()) {
-                if (node->IsClassSet("bpiw_option")) {
-                    return find_descendant_by_class(node, "bpiw_option_preview");
-                }
+    void ensure_bpiw_preview(std::string const &rel_path) {
+        if (bpiw_preview_cache().contains(rel_path)) {
+            return;
+        }
+        if (AppUi::s_instance == nullptr) {
+            return;
+        }
+        auto const full_path = resource_dir / rel_path;
+        if (!std::filesystem::exists(full_path)) {
+            return;
+        }
+        int w = 0;
+        int h = 0;
+        int comp = 0;
+        stbi_uc *pixels = stbi_load(full_path.string().c_str(), &w, &h, &comp, 4);
+        if (pixels == nullptr || w <= 0 || h <= 0) {
+            return;
+        }
+        BpiwPreviewGpu entry{};
+        entry.image = upload_bpiw_preview(AppUi::s_instance->device, w, h, pixels);
+        stbi_image_free(pixels);
+        entry.sampler = AppUi::s_instance->device.create_sampler({.name = "bpiw_preview_sampler"});
+        bpiw_preview_cache().emplace(rel_path, entry);
+    }
+
+    void refresh_bpiw_preview_textures() {
+        if (AppUi::s_instance == nullptr || !AppUi::s_instance->imgui_renderer.has_value()) {
+            return;
+        }
+        auto &renderer = *AppUi::s_instance->imgui_renderer;
+        for (auto &[path, entry] : bpiw_preview_cache()) {
+            if (entry.image.is_empty()) {
+                entry.tex_id = nullptr;
+                continue;
             }
-            return nullptr;
+            entry.tex_id = renderer.create_texture_id({.image_view_id = entry.image.default_view(), .sampler_id = entry.sampler});
+            (void)path;
+        }
+    }
+
+    void clear_bpiw_preview_cache(daxa::Device device) {
+        for (auto &[path, entry] : bpiw_preview_cache()) {
+            if (!entry.sampler.is_empty()) {
+                device.destroy_sampler(entry.sampler);
+            }
+            if (!entry.image.is_empty()) {
+                device.destroy_image(entry.image);
+            }
+            (void)path;
+        }
+        bpiw_preview_cache().clear();
+    }
+
+    auto bpiw_catalog() -> std::vector<BpiwOption> const & {
+        static auto const catalog = std::vector<BpiwOption>{
+            {"Keyboard", "media/icons/keyboard.png", "256 x 3", "1 ch, int8"},
+            {"Buffer A", "media/icons/buffer00.png", "Viewport Res", "4 ch, Float32, linear"},
+            {"Buffer B", "media/icons/buffer01.png", "Viewport Res", "4 ch, Float32, linear"},
+            {"Buffer C", "media/icons/buffer02.png", "Viewport Res", "4 ch, Float32, linear"},
+            {"Buffer D", "media/icons/buffer03.png", "Viewport Res", "4 ch, Float32, linear"},
+            {"Cube A", "media/icons/cubemap00.png", "1024 x 1024", "4 ch, Float16, linear"},
+            {"Abstract 1", "media/images/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"Abstract 2", "media/images/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg", "512 x 512", "3 ch, uint8"},
+            {"Abstract 3", "media/images/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"Bayer", "media/images/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png", "8 x 8", "1 ch, uint8"},
+            {"Blue Noise", "media/images/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png", "1024 x 1024", "4 ch, uint8"},
+            {"Font 1", "media/images/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png", "1024 x 1024", "4 ch, uint8"},
+            {"Gray Noise Medium", "media/images/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png", "256 x 256", "1 ch, uint8"},
+            {"Gray Noise Small", "media/images/0a40562379b63dfb89227e6d172f39fdce9022cba76623f1054a2c83d6c0ba5d.png", "64 x 64", "1 ch, uint8"},
+            {"Lichen", "media/images/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"London", "media/images/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg", "512 x 512", "3 ch, uint8"},
+            {"Nyan Cat", "media/images/cbcbb5a6cfb55c36f8f021fbb0e3f69ac96339a39fa85cd96f2017a2192821b5.png", "256 x 32", "4 ch, uint8"},
+            {"Organic 1", "media/images/cd4c518bc6ef165c39d4405b347b51ba40f8d7a065ab0e8d2e4f422cbc1e8a43.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"Organic 2", "media/images/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"Organic 3", "media/images/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"Organic 4", "media/images/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg", "1024 x 1024", "3 ch, uint8"},
+            {"Pebbles", "media/images/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png", "512 x 512", "1 ch, uint8"},
+            {"RGBA Noise Medium", "media/images/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png", "256 x 256", "4 ch, uint8"},
+            {"RGBA Noise Small", "media/images/3083c722c0c738cad0f468383167a0d246f91af2bfa373e9c5c094fb8c8413e0.png", "64 x 64", "4 ch, uint8"},
+            {"Rock Tiles", "media/images/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg", "512 x 512", "3 ch, uint8"},
+            {"Rusty Metal", "media/images/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg", "512 x 512", "3 ch, uint8"},
+            {"Stars", "media/images/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg", "512 x 512", "3 ch, uint8"},
+            {"Wood", "media/images/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg", "1024 x 1024", "1 ch, uint8"},
+            {"Forest", "media/images/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png", "256 x 256", "3 ch, uint8"},
+            {"Forest Blurred", "media/images/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png", "64 x 64", "3 ch, uint8"},
+            {"St. Peter's Basilica", "media/images/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg", "256 x 256", "3 ch, uint8"},
+            {"St. Peter's Blurred", "media/images/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png", "64 x 64", "3 ch, uint8"},
+            {"Uffizi Gallery", "media/images/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg", "256 x 256", "3 ch, uint8"},
+            {"Uffizi Gallery Blurred", "media/images/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png", "64 x 64", "3 ch, uint8"},
+            {"Gray Noise3D", "media/icons/volume_gray.png", "32 x 32 x 32", "1 ch, uint8"},
+            {"RGBA Noise3D", "media/icons/volume_rgba.png", "32 x 32 x 32", "4 ch, uint8"},
         };
-        if (auto *img = walk(event.GetCurrentElement())) {
-            return img;
-        }
-        return walk(event.GetTargetElement());
+        return catalog;
     }
 
-    static constexpr size_t buffer_panel_pass_code_max_chars = 100000;
-
-    auto sync_textarea_value_to_pass_json(Rml::ElementFormControlTextArea *ta) -> bool {
-        if (ta == nullptr || AppUi::s_instance == nullptr) {
-            return false;
-        }
-        auto *attr = ta->GetAttribute("data-pass");
-        if (attr == nullptr) {
-            return false;
-        }
-        auto pass_name = attr->Get<Rml::String>();
-        auto name = std::string(pass_name.data(), pass_name.size());
-        auto *pass_ptr = find_pass(name);
-        if (pass_ptr == nullptr) {
-            return false;
-        }
-        (*pass_ptr)["code"] = std::string(ta->GetValue());
-        /* 不在此处设 dirty：仅在下方的「▶」编译时重新编译 GPU 管线，避免每次输入弹出编译错误 */
-        return true;
+    auto cubemap_image_paths() -> std::array<std::string_view, 6> const & {
+        static auto const paths = std::array<std::string_view, 6>{
+            "media/images/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png",
+            "media/images/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png",
+            "media/images/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg",
+            "media/images/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png",
+            "media/images/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg",
+            "media/images/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png",
+        };
+        return paths;
     }
 
-    void set_code_stats_for_textarea(Rml::ElementFormControlTextArea *ta) {
-        if (ta == nullptr) {
-            return;
+    auto is_cubemap_image(std::string const &path) -> bool {
+        for (auto const &cubemap_path : cubemap_image_paths()) {
+            if (path == cubemap_path) {
+                return true;
+            }
         }
-        /* textarea 在 .buffer_pass_code_editor_ta_cell 内，统计在并列的 toolbar 里 */
-        auto *ta_cell = ta->GetParentNode();
-        auto *wrap = ta_cell != nullptr ? ta_cell->GetParentNode() : nullptr;
-        if (wrap == nullptr) {
-            return;
-        }
-        auto *stats = find_descendant_by_class(wrap, "buffer_pass_code_stats");
-        if (stats == nullptr) {
-            return;
-        }
-        auto const n = std::string(ta->GetValue()).size();
-        stats->SetInnerRML(Rml::String(fmt::format("{}/{}", n, buffer_panel_pass_code_max_chars).c_str()));
+        return false;
     }
 
-    class PassCodeChangeListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            if (event.GetId() != Rml::EventId::Change) {
-                return;
-            }
-            auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(event.GetTargetElement());
-            if (ta == nullptr) {
-                return;
-            }
-            if (!sync_textarea_value_to_pass_json(ta)) {
-                return;
-            }
-            set_code_stats_for_textarea(ta);
-        }
-    };
-    PassCodeChangeListener pass_code_change_listener;
-
-    class BufferPanelTabChangeListener : public Rml::EventListener {
-      public:
-        void ProcessEvent(Rml::Event &event) override {
-            if (event.GetId() != Rml::EventId::Tabchange) {
-                return;
-            }
-            if (AppUi::s_instance != nullptr) {
-                AppUi::s_instance->buffer_panel.on_tab_changed();
+    auto misc_bpiw_options() -> std::vector<BpiwOption> {
+        auto result = std::vector<BpiwOption>{};
+        for (auto const &opt : bpiw_catalog()) {
+            if (opt.img_path.starts_with("media/icons/") && opt.label != "Gray Noise3D" && opt.label != "RGBA Noise3D") {
+                if (std::filesystem::exists(resource_dir / opt.img_path)) {
+                    result.push_back(opt);
+                }
             }
         }
-    };
-    BufferPanelTabChangeListener buffer_panel_tab_change_listener;
-
-    class UpdateListener : public efsw::FileWatchListener {
-      public:
-        void handleFileAction([[maybe_unused]] efsw::WatchID watchid, [[maybe_unused]] const std::string &dir,
-                              const std::string &filename, efsw::Action action,
-                              [[maybe_unused]] std::string oldFilename) override {
-
-            if (action != efsw::Actions::Modified) {
-                // we don't care about anything except modifications
-                return;
-            }
-
-            auto name = filename.substr(0, filename.find('_'));
-
-            auto *edit_state_ptr = (BufferFileEditState *)nullptr;
-            if (name == "Common") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.common_file_edit_state;
-            } else if (name == "Buffer A") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.buffer00_file_edit_state;
-            } else if (name == "Buffer B") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.buffer01_file_edit_state;
-            } else if (name == "Buffer C") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.buffer02_file_edit_state;
-            } else if (name == "Buffer D") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.buffer03_file_edit_state;
-            } else if (name == "Cube A") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.cubemap00_file_edit_state;
-            } else if (name == "Image") {
-                edit_state_ptr = AppUi::s_instance->buffer_panel.image_file_edit_state;
-            } else {
-                return;
-            }
-
-            if (edit_state_ptr == nullptr) {
-                return;
-            }
-            edit_state_ptr->modified = true;
-        }
-    };
-
-    auto temp_directory = std::filesystem::temp_directory_path();
-    std::unique_ptr<UpdateListener> update_listener = std::make_unique<UpdateListener>();
-    std::unique_ptr<efsw::FileWatcher> file_watcher = []() {
-        auto result = std::make_unique<efsw::FileWatcher>();
-        result->addWatch(temp_directory.string(), update_listener.get());
-        result->watch();
         return result;
-    }();
-    /** tab 内结构：tab → body.buffer_tab → .buffer_tab_row → [#content, button] */
-    auto buffer_tab_row_from_tab(Rml::Element *tab) -> Rml::Element * {
-        if (tab == nullptr || tab->GetNumChildren() < 1) {
-            return nullptr;
-        }
-        auto *body = tab->GetChild(0);
-        if (body == nullptr || body->GetNumChildren() < 1) {
-            return nullptr;
-        }
-        return body->GetChild(0);
     }
 
-    auto buffer_tab_content_div_from_tab(Rml::Element *tab) -> Rml::Element * {
-        auto *row = buffer_tab_row_from_tab(tab);
-        if (row == nullptr || row->GetNumChildren() < 1) {
-            return nullptr;
-        }
-        return row->GetChild(0);
-    }
-
-    auto buffer_tab_close_button_from_tab(Rml::Element *tab) -> Rml::Element * {
-        auto *row = buffer_tab_row_from_tab(tab);
-        if (row == nullptr || row->GetNumChildren() < 2) {
-            return nullptr;
-        }
-        return row->GetChild(1);
-    }
-
-    static auto trim_pass_name(std::string s) -> std::string {
-        while (!s.empty() && static_cast<unsigned char>(s.front()) <= ' ') {
-            s.erase(0, 1);
-        }
-        while (!s.empty() && static_cast<unsigned char>(s.back()) <= ' ') {
-            s.pop_back();
-        }
-        return s;
-    }
-
-    /** 当前 buffer tab 对应的 renderpass 名称（与 JSON 中 name 一致）。模板下 #content 未必含 ElementText 子节点，故多路回退。 */
-    auto active_pass_name_from_tabs(Rml::ElementTabSet *tabs_element) -> std::string {
-        if (tabs_element == nullptr) {
-            return {};
-        }
-        auto const active = tabs_element->GetActiveTab();
-        auto *tab_row = tabs_element->GetChild(0);
-        if (tab_row == nullptr || active < 0 || active >= tab_row->GetNumChildren()) {
-            return {};
-        }
-        auto *tab_handle = tab_row->GetChild(active);
-        if (auto *content_div = buffer_tab_content_div_from_tab(tab_handle); content_div != nullptr) {
-            if (auto *et = dynamic_cast<Rml::ElementText *>(content_div->GetChild(0))) {
-                return trim_pass_name(std::string(et->GetText()));
+    auto texture_bpiw_options() -> std::vector<BpiwOption> {
+        auto result = std::vector<BpiwOption>{};
+        for (auto const &opt : bpiw_catalog()) {
+            if (opt.img_path.starts_with("media/images/") && !is_cubemap_image(opt.img_path) &&
+                std::filesystem::exists(resource_dir / opt.img_path)) {
+                result.push_back(opt);
             }
-            for (int i = 0; i < content_div->GetNumChildren(); ++i) {
-                if (auto *et = dynamic_cast<Rml::ElementText *>(content_div->GetChild(i))) {
-                    return trim_pass_name(std::string(et->GetText()));
-                }
-            }
-            Rml::String inner;
-            content_div->GetInnerRML(inner);
-            if (!inner.empty()) {
-                auto out = trim_pass_name(std::string(inner.c_str()));
-                if (!out.empty()) {
-                    return out;
+        }
+        return result;
+    }
+
+    auto cubemap_bpiw_options() -> std::vector<BpiwOption> {
+        static auto const names = std::array{
+            "Forest",
+            "Forest Blurred",
+            "St. Peter's Basilica",
+            "St. Peter's Blurred",
+            "Uffizi Gallery",
+            "Uffizi Gallery Blurred",
+        };
+        auto result = std::vector<BpiwOption>{};
+        for (auto const *name : names) {
+            for (auto const &opt : bpiw_catalog()) {
+                if (opt.label == name && std::filesystem::exists(resource_dir / opt.img_path)) {
+                    result.push_back(opt);
+                    break;
                 }
             }
         }
-        auto *panels = tabs_element->GetChild(1);
-        if (panels != nullptr && active >= 0 && active < panels->GetNumChildren()) {
-            if (auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(
-                    find_descendant_by_class(panels->GetChild(active), "buffer_pass_code_editor"))) {
-                if (auto *attr = ta->GetAttribute("data-pass"); attr != nullptr) {
-                    auto const s = attr->Get<Rml::String>();
-                    if (!s.empty()) {
-                        return trim_pass_name(std::string(s.data(), s.size()));
+        return result;
+    }
+
+    auto volume_bpiw_options() -> std::vector<BpiwOption> {
+        auto result = std::vector<BpiwOption>{};
+        for (auto const &opt : bpiw_catalog()) {
+            if (opt.label == "Gray Noise3D" || opt.label == "RGBA Noise3D") {
+                if (std::filesystem::exists(resource_dir / opt.img_path)) {
+                    result.push_back(opt);
+                }
+            }
+        }
+        return result;
+    }
+
+    void draw_bpiw_orange_separator() {
+        auto const line_y = ImGui::GetCursorScreenPos().y;
+        auto const line_x0 = ImGui::GetWindowPos().x;
+        auto const line_x1 = line_x0 + ImGui::GetWindowWidth();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2{line_x0, line_y},
+            ImVec2{line_x1, line_y + ui_layout::k_tab_orange_border},
+            IM_COL32(248, 176, 48, 255));
+        ImGui::Dummy(ImVec2{0.f, ui_layout::k_tab_orange_border});
+    }
+
+    auto draw_bpiw_option_card(BpiwOption const &opt) -> bool {
+        ensure_bpiw_preview(opt.img_path);
+        auto const card_size = ImVec2{ui_layout::k_bpiw_card_w, ui_layout::k_bpiw_card_h};
+        auto const pos = ImGui::GetCursorScreenPos();
+        auto *draw = ImGui::GetWindowDrawList();
+        ImGui::PushID(opt.img_path.c_str());
+        ImGui::InvisibleButton("##bpiw_card", card_size);
+        bool const hovered = ImGui::IsItemHovered();
+        bool const pressed = ImGui::IsItemClicked();
+        ImGui::PopID();
+
+        auto const card_max = ImVec2{pos.x + card_size.x, pos.y + card_size.y};
+        auto const bg = IM_COL32(190, 190, 190, 255);
+        auto const border = hovered ? IM_COL32(0, 0, 0, 255) : bg;
+        draw->AddRectFilled(pos, card_max, bg);
+        draw->AddRect(pos, card_max, border);
+
+        auto const preview_min = ImVec2{pos.x + 4.f, pos.y + 4.f};
+        auto const preview_max = ImVec2{preview_min.x + ui_layout::k_bpiw_preview_size, preview_min.y + ui_layout::k_bpiw_preview_size};
+        draw->AddRectFilled(preview_min, preview_max, IM_COL32(0, 0, 0, 255));
+
+        auto preview_it = bpiw_preview_cache().find(opt.img_path);
+        if (preview_it != bpiw_preview_cache().end() && preview_it->second.tex_id != nullptr) {
+            draw->AddImage(preview_it->second.tex_id, preview_min, preview_max);
+        }
+
+        auto const text_x = preview_max.x + 4.f;
+        auto const text_col = IM_COL32(0, 0, 0, 255);
+        auto *font = ImGui::GetFont();
+        float const font_size = ImGui::GetFontSize() * 0.85f;
+        draw->AddText(font, font_size, ImVec2{text_x, pos.y + 4.f}, text_col, opt.label.c_str());
+        draw->AddText(font, font_size, ImVec2{text_x, pos.y + 18.f}, text_col, "by shadertoy");
+        draw->AddText(font, font_size, ImVec2{text_x, pos.y + 44.f}, text_col, opt.resolution.c_str());
+        draw->AddText(font, font_size, ImVec2{text_x, pos.y + 58.f}, text_col, opt.format_info.c_str());
+
+        return pressed;
+    }
+
+    void draw_bpiw_option_grid(std::vector<BpiwOption> const &options, int tab_id, std::function<void(BpiwOption const &)> const &on_select) {
+        ImGui::PushID(tab_id);
+        ImGui::BeginChild("BpiwScroll", ImVec2{-1.f, 0.f}, false);
+        int col = 0;
+        for (auto const &opt : options) {
+            if (col > 0) {
+                ImGui::SameLine(0.f, ui_layout::k_bpiw_col_gap);
+            }
+            if (draw_bpiw_option_card(opt)) {
+                on_select(opt);
+            }
+            ++col;
+            if (col >= ui_layout::k_bpiw_cols) {
+                col = 0;
+            }
+        }
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    auto channel_preview_path(nlohmann::json const &input, nlohmann::json const &renderpasses) -> std::string {
+        auto path = std::string{};
+        if (input.contains("filepath")) {
+            path = input["filepath"].get<std::string>();
+        } else if (input.contains("src")) {
+            path = input["src"].get<std::string>();
+        }
+        replace_all(path, "/media/a/", "media/images/");
+
+        auto input_type = std::string{};
+        if (input.contains("type")) {
+            input_type = input["type"].get<std::string>();
+        } else if (input.contains("ctype")) {
+            input_type = input["ctype"].get<std::string>();
+        }
+
+        if (std::filesystem::exists(resource_dir / path)) {
+            return path;
+        }
+        if (input_type == "keyboard") {
+            return "media/icons/keyboard.png";
+        }
+        if (input_type == "buffer") {
+            auto buffer_index = 0;
+            for (auto &rp : renderpasses) {
+                if (rp["type"] == "buffer") {
+                    if (rp["outputs"][0]["id"] == input["id"]) {
+                        break;
                     }
+                    ++buffer_index;
                 }
             }
+            return fmt::format("media/icons/buffer0{}.png", buffer_index);
         }
-        return {};
+        if (input_type == "cubemap") {
+            return "media/icons/cubemap00.png";
+        }
+        if (input_type == "volume") {
+            return "media/icons/volume_gray.png";
+        }
+        return path;
     }
+
+    void draw_channel_slot_preview(ImVec2 slot_min, ImVec2 slot_max, std::string const &rel_path) {
+        if (rel_path.empty()) {
+            return;
+        }
+        ensure_bpiw_preview(rel_path);
+        auto preview_it = bpiw_preview_cache().find(rel_path);
+        if (preview_it != bpiw_preview_cache().end() && preview_it->second.tex_id != nullptr) {
+            ImGui::GetWindowDrawList()->AddImage(preview_it->second.tex_id, slot_min, slot_max);
+        }
+    }
+
 } // namespace
 
-BufferFileEditState::~BufferFileEditState() {
-    // ignore error code.
-    auto ec = std::error_code{};
-    std::filesystem::remove(path, ec);
+namespace {
+    auto constexpr k_pass_tab_order = std::array{
+        "Common",
+        "Buffer A",
+        "Buffer B",
+        "Buffer C",
+        "Buffer D",
+        "Cube A",
+        "Image",
+    };
+} // namespace
+
+void BufferPanel::shutdown_gpu_resources(daxa::Device device) {
+    clear_bpiw_preview_cache(device);
 }
 
-BufferPanel::~BufferPanel() {
-    cleanup();
-}
-
-void BufferPanel::load([[maybe_unused]] Rml::Context *rml_context, Rml::ElementDocument *document) {
-    base_element = document->GetElementById("buffer_panel");
-    base_element->AddEventListener(Rml::EventId::Mousedown, &buffer_panel_event_listener);
-    base_element->AddEventListener(Rml::EventId::Mouseup, &buffer_panel_event_listener);
-    base_element->AddEventListener(Rml::EventId::Mousemove, &buffer_panel_event_listener);
-    base_element->AddEventListener(Rml::EventId::Keydown, &buffer_panel_event_listener);
-    base_element->AddEventListener(Rml::EventId::Keyup, &buffer_panel_event_listener);
-
-    bpiw_element = document->GetElementById("bpiw");
-    bpiw_element->AddEventListener(Rml::EventId::Blur, &bpiw_event_listener);
-
-    if (auto *bpiw_header = document->GetElementById("bpiw_header"); bpiw_header != nullptr) {
-        bpiw_header->AddEventListener(Rml::EventId::Mousedown, &bpiw_header_drag_listener);
-    }
-    if (auto *screen_el = document->GetElementById("screen"); screen_el != nullptr) {
-        screen_el->AddEventListener(Rml::EventId::Mousemove, &bpiw_screen_drag_listener);
-        screen_el->AddEventListener(Rml::EventId::Mouseup, &bpiw_screen_drag_listener);
-    }
-
-    auto *buffer_panel_add_panel = document->GetElementById("buffer_panel_add_panel");
-    buffer_panel_add_panel->AddEventListener(Rml::EventId::Blur, &buffer_panel_add_options_event_listener);
-
-    tabs_element = dynamic_cast<Rml::ElementTabSet *>(document->GetElementById("buffer_tabs"));
-    tabs_element->AddEventListener(Rml::EventId::Tabchange, &buffer_panel_tab_change_listener);
-}
-
-void BufferPanel::process_event(Rml::Event &event, std::string const &value) {
-    if (during_shader_load) {
+void BufferPanel::sort_renderpasses() {
+    if (!json.contains("renderpass") || !json["renderpass"].is_array()) {
         return;
     }
+    auto &renderpasses = json["renderpass"];
+    auto sorted = nlohmann::json::array();
+    for (auto const *name : k_pass_tab_order) {
+        for (auto &renderpass : renderpasses) {
+            if (renderpass.contains("name") && renderpass["name"] == name) {
+                sorted.push_back(renderpass);
+                break;
+            }
+        }
+    }
+    for (auto &renderpass : renderpasses) {
+        if (!renderpass.contains("name")) {
+            continue;
+        }
+        auto const &name = renderpass["name"].get<std::string>();
+        bool const known = std::any_of(k_pass_tab_order.begin(), k_pass_tab_order.end(), [&](char const *slot) {
+            return name == slot;
+        });
+        if (!known) {
+            sorted.push_back(renderpass);
+        }
+    }
+    renderpasses = std::move(sorted);
+}
 
-    auto const active_pass_name = active_pass_name_from_tabs(tabs_element);
+auto BufferPanel::pass_count() const -> int {
+    if (!json.contains("renderpass") || !json["renderpass"].is_array()) {
+        return 0;
+    }
+    return static_cast<int>(json["renderpass"].size());
+}
 
-    if (value == "buffer_panel_ichannel_settings") {
-        buffer_panel_ichannel_settings(event);
-    } else if (value == "buffer_panel_bpiw_close") {
-        buffer_panel_bpiw_close();
-    } else if (value == "buffer_panel_change_filter") {
-        buffer_panel_change_filter(event, active_pass_name);
-    } else if (value == "buffer_panel_change_wrap") {
-        buffer_panel_change_wrap(event, active_pass_name);
-    } else if (value == "buffer_panel_bpiw_select") {
-        buffer_panel_bpiw_select(event, active_pass_name);
-    } else if (value == "buffer_panel_ichannel_close") {
-        buffer_panel_ichannel_close(event, active_pass_name);
-    } else if (value == "buffer_panel_add") {
-        buffer_panel_add(event);
-    } else if (value == "buffer_panel_add_option") {
-        buffer_panel_add_option(event);
-    } else if (value == "buffer_panel_tab_close") {
-        buffer_panel_tab_close(event);
-    } else if (value == "buffer_panel_compile_shader") {
-        buffer_panel_compile_shader(event);
-    } else if (value == "buffer_panel_load_json") {
-        buffer_panel_load_json();
-    } else if (value == "buffer_panel_shader_input_toggle") {
-        buffer_panel_shader_input_toggle(event);
+auto BufferPanel::pass_name_at(int tab_index) const -> std::string {
+    if (tab_index < 0 || tab_index >= pass_count()) {
+        return {};
+    }
+    return json["renderpass"][tab_index]["name"].get<std::string>();
+}
+
+auto BufferPanel::active_pass_name() const -> std::string {
+    return pass_name_at(active_tab);
+}
+
+void BufferPanel::rebuild_code_buffers_from_json() {
+    pass_code_buffers.clear();
+    if (!json.contains("renderpass")) {
+        return;
+    }
+    for (auto &renderpass : json["renderpass"]) {
+        auto name = renderpass["name"].get<std::string>();
+        auto code = resolve_pass_code(renderpass);
+        replace_all(code, "\\n", "\n");
+        auto &buf = pass_code_buffers[name];
+        buf.assign(pass_code_max_chars + 1, '\0');
+        if (code.size() >= pass_code_max_chars) {
+            code.resize(pass_code_max_chars);
+        }
+        std::memcpy(buf.data(), code.data(), code.size());
     }
 }
 
-void BufferPanel::buffer_panel_ichannel_settings(Rml::Event &event) {
-    auto *ichannel = event.GetCurrentElement()->GetParentNode()->GetParentNode()->GetChild(0);
-    auto *ichannel_img = ichannel->GetChild(0);
-    auto *ichannel_sampler_menu = ichannel->GetChild(1);
+void BufferPanel::sync_pass_code_to_json(std::string const &pass_name) {
+    auto it = pass_code_buffers.find(pass_name);
+    if (it == pass_code_buffers.end()) {
+        return;
+    }
+    auto *pass_ptr = find_pass(json, pass_name);
+    if (pass_ptr == nullptr) {
+        return;
+    }
+    auto code = std::string{it->second.data()};
+    if ((*pass_ptr)["code"].get<std::string>() != code) {
+        (*pass_ptr)["code"] = code;
+    }
+}
 
-    auto is_sampler_menu_closed = ichannel_sampler_menu->GetAttribute("style")->Get(Rml::String("display: none;")) == "display: none;";
-    if (is_sampler_menu_closed) {
-        ichannel_img->SetAttribute("style", "display: none; image-color: #000000;");
-        ichannel_sampler_menu->SetAttribute("style", "display: inline-block;");
+void BufferPanel::sync_active_pass_code_to_json() {
+    sync_pass_code_to_json(active_pass_name());
+}
+
+void BufferPanel::sync_all_pass_codes_to_json() {
+    for (auto const &[name, _] : pass_code_buffers) {
+        sync_pass_code_to_json(name);
+    }
+}
+
+void BufferPanel::load_shadertoy_json(nlohmann::json const &temp_json) {
+    if (temp_json.contains("numShaders")) {
+        for (auto &shader : temp_json["shaders"]) {
+            auto filepath = std::string{"shader_"} + std::string{shader["info"]["id"]} + std::string{".json"};
+            auto f = std::ofstream(filepath);
+            f << std::setw(4) << shader;
+        }
+        json = temp_json["shaders"][0];
+    } else if (temp_json.contains("Shader")) {
+        json = temp_json["Shader"];
     } else {
-        ichannel_img->SetAttribute("style", "display: inline-block; image-color: #ffffff;");
-        ichannel_sampler_menu->SetAttribute("style", "display: none;");
+        json = temp_json;
+    }
+    reload_json();
+}
+
+void BufferPanel::reload_json() {
+    sort_renderpasses();
+    rebuild_code_buffers_from_json();
+    for (int i = 0; i < pass_count(); ++i) {
+        if (pass_name_at(i) == "Image") {
+            active_tab = i;
+            break;
+        }
+    }
+    if (active_tab >= pass_count()) {
+        active_tab = std::max(0, pass_count() - 1);
+    }
+    channel_show_sampler = {};
+    dirty = true;
+}
+
+void BufferPanel::compile_shader() {
+    sync_active_pass_code_to_json();
+    sync_all_pass_codes_to_json();
+    dirty = true;
+    if (on_recompile) {
+        on_recompile();
     }
 }
-void BufferPanel::buffer_panel_bpiw_close() {
-    bpiw_dragging = false;
-    open_ichannel_img_element = nullptr;
-    bpiw_element->SetProperty("display", "none");
-    bpiw_element->Blur();
+
+void BufferPanel::load_json_from_dialog() {
+    if (AppUi::s_instance != nullptr) {
+        AppUi::s_instance->load_json();
+    }
 }
-void BufferPanel::buffer_panel_change_filter(Rml::Event &event, std::string const &active_pass_name) {
-    auto *filter_select = dynamic_cast<Rml::ElementFormControlSelect *>(event.GetCurrentElement());
-    if (filter_select == nullptr || active_pass_name.empty()) {
+
+void BufferPanel::add_pass(std::string const &pass_kind) {
+    if (find_pass(json, pass_kind) != nullptr) {
         return;
     }
-    auto *pass_ptr = find_pass(active_pass_name);
+
+    nlohmann::json new_pass;
+    if (pass_kind == "Common") {
+        new_pass = nlohmann::json::parse(R"({
+            "outputs": [], "inputs": [],
+            "code": "vec4 someFunction( vec4 a, float b )\n{\n    return a+b;\n}",
+            "name": "Common", "description": "", "type": "common"
+        })");
+    } else if (pass_kind == "Buffer A") {
+        new_pass = nlohmann::json::parse(R"({
+            "outputs": [{"channel": 0, "id": "4dXGR8"}], "inputs": [],
+            "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
+            "name": "Buffer A", "description": "", "type": "buffer"
+        })");
+    } else if (pass_kind == "Buffer B") {
+        new_pass = nlohmann::json::parse(R"({
+            "outputs": [{"channel": 0, "id": "XsXGR8"}], "inputs": [],
+            "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
+            "name": "Buffer B", "description": "", "type": "buffer"
+        })");
+    } else if (pass_kind == "Buffer C") {
+        new_pass = nlohmann::json::parse(R"({
+            "outputs": [{"channel": 0, "id": "4sXGR8"}], "inputs": [],
+            "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
+            "name": "Buffer C", "description": "", "type": "buffer"
+        })");
+    } else if (pass_kind == "Buffer D") {
+        new_pass = nlohmann::json::parse(R"({
+            "outputs": [{"channel": 0, "id": "XdfGR8"}], "inputs": [],
+            "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
+            "name": "Buffer D", "description": "", "type": "buffer"
+        })");
+    } else if (pass_kind == "Cube A") {
+        new_pass = nlohmann::json::parse(R"({
+            "outputs": [{"channel": 0, "id": "4dX3Rr"}], "inputs": [],
+            "code": "void mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    vec3 col = 0.5 + 0.5*rayDir;\n    fragColor = vec4(col,1.0);\n}",
+            "name": "Cube A", "description": "", "type": "cubemap"
+        })");
+    } else {
+        return;
+    }
+
+    json["renderpass"].push_back(new_pass);
+    reload_json();
+    for (int i = 0; i < pass_count(); ++i) {
+        if (pass_name_at(i) == pass_kind) {
+            active_tab = i;
+            break;
+        }
+    }
+}
+
+void BufferPanel::close_tab(int tab_index) {
+    auto const name = pass_name_at(tab_index);
+    if (name == "Image") {
+        return;
+    }
+    auto const active_name = active_pass_name();
+    auto &renderpasses = json["renderpass"];
+    for (auto iter = renderpasses.begin(); iter != renderpasses.end(); ++iter) {
+        if ((*iter)["name"] == name) {
+            renderpasses.erase(iter);
+            break;
+        }
+    }
+    reload_json();
+    if (name == active_name) {
+        active_tab = std::max(0, tab_index - 1);
+        if (active_tab >= pass_count()) {
+            active_tab = std::max(0, pass_count() - 1);
+        }
+        return;
+    }
+    for (int i = 0; i < pass_count(); ++i) {
+        if (pass_name_at(i) == active_name) {
+            active_tab = i;
+            return;
+        }
+    }
+}
+
+void BufferPanel::remove_channel_input(std::string const &pass_name, int channel_index) {
+    auto *pass_ptr = find_pass(json, pass_name);
     if (pass_ptr == nullptr) {
         return;
     }
     auto &pass = *pass_ptr;
-    auto *ichannel = filter_select->GetParentNode()->GetParentNode();
-    auto ichannel_name = ichannel->GetId();
-    auto channel_index = int(ichannel_name[8]) - int('0');
-    auto *channel_input = find_input(pass, channel_index);
-    if (channel_input != nullptr) {
-        auto &input = *channel_input;
-        input["sampler"]["filter"] = filter_select->GetValue();
-        dirty = true;
+    int current_index = 0;
+    for (auto it = pass["inputs"].begin(); it != pass["inputs"].end(); ++it, ++current_index) {
+        if ((*it)["channel"] == channel_index) {
+            pass["inputs"].erase(it);
+            dirty = true;
+            break;
+        }
     }
 }
-void BufferPanel::buffer_panel_change_wrap(Rml::Event &event, std::string const &active_pass_name) {
-    auto *wrap_select = dynamic_cast<Rml::ElementFormControlSelect *>(event.GetCurrentElement());
-    if (wrap_select == nullptr || active_pass_name.empty()) {
-        return;
-    }
-    auto *pass_ptr = find_pass(active_pass_name);
-    if (pass_ptr == nullptr) {
-        return;
-    }
-    auto &pass = *pass_ptr;
-    auto *ichannel = wrap_select->GetParentNode()->GetParentNode();
-    auto ichannel_name = ichannel->GetId();
-    auto channel_index = int(ichannel_name[8]) - int('0');
-    auto *channel_input = find_input(pass, channel_index);
-    if (channel_input != nullptr) {
-        auto &input = *channel_input;
-        input["sampler"]["wrap"] = wrap_select->GetValue();
-        dirty = true;
-    }
-}
-void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, std::string const &active_pass_name) {
-    auto *select_img = bpiw_option_preview_img_from_click(event);
-    if (select_img == nullptr || open_ichannel_img_element == nullptr || active_pass_name.empty()) {
-        return;
-    }
-    auto *src_attr = select_img->GetAttribute("src");
-    if (src_attr == nullptr) {
-        return;
-    }
-    auto img_path = src_attr->Get(Rml::String(""));
 
-    auto *pass_ptr = find_pass(active_pass_name);
+void BufferPanel::apply_bpiw_selection(std::string const &img_path, int bpiw_category) {
+    if (bpiw_pass_name.empty()) {
+        return;
+    }
+    auto *pass_ptr = find_pass(json, bpiw_pass_name);
     if (pass_ptr == nullptr) {
         return;
     }
     auto &pass = *pass_ptr;
 
-    auto *bpiw_tabs = dynamic_cast<Rml::ElementTabSet *>(bpiw_element->GetElementById("bpiw_tabs"));
-    if (bpiw_tabs == nullptr) {
-        return;
-    }
+    auto img_path_normalized = img_path;
+    replace_all(img_path_normalized, "\\", "/");
 
-    auto *datagrid_column = open_ichannel_img_element->GetParentNode()->GetParentNode();
-    auto *ichannel = datagrid_column->GetChild(0);
-    auto *ichannel_label = datagrid_column->GetChild(1);
-    auto *ichannel_label_settings = ichannel_label->GetChild(1);
-
-    auto *ichannel_img = ichannel->GetChild(0);
-    auto *ichannel_sampler_menu = ichannel->GetChild(1);
-    auto *ichannel_close = ichannel->GetChild(2);
-
-    ichannel_img->SetAttribute("src", img_path);
-    ichannel_img->SetAttribute("style", "display: inline-block; image-color: #ffffff;");
-    ichannel_close->SetAttribute("style", "display: inline-block;");
-    ichannel_sampler_menu->SetAttribute("style", "display: none;");
-    ichannel_label_settings->SetAttribute("style", "display: block;");
-
-    auto ichannel_name = ichannel->GetId();
-    auto channel_index = int(ichannel_name[8]) - int('0');
-
-    replace_all(img_path, "../../media/images/", "/media/a/");
     auto default_sampler = nlohmann::json{};
     default_sampler["filter"] = "linear";
     default_sampler["wrap"] = "clamp";
@@ -682,645 +702,587 @@ void BufferPanel::buffer_panel_bpiw_select(Rml::Event &event, std::string const 
     default_sampler["internal"] = "byte";
 
     auto new_input = nlohmann::json{};
-    new_input["id"] = std::to_string(std::hash<std::string>{}(img_path));
-    new_input["channel"] = channel_index;
+    new_input["id"] = std::to_string(std::hash<std::string>{}(img_path_normalized));
+    new_input["channel"] = bpiw_target_channel;
     new_input["sampler"] = default_sampler;
     new_input["published"] = 1;
 
-    switch (bpiw_tabs->GetActiveTab()) {
+    auto const rel_icon = [&](std::string const &p) { return p; };
+
+    switch (bpiw_category) {
     case 0: {
-        if (img_path == "../../media/icons/keyboard.png") {
+        if (img_path_normalized == rel_icon("media/icons/keyboard.png")) {
             new_input["filepath"] = "/presets/tex00.jpg";
             new_input["type"] = "keyboard";
             new_input["sampler"]["filter"] = "nearest";
-        } else if (img_path == "../../media/icons/buffer00.png") {
+        } else if (img_path_normalized == rel_icon("media/icons/buffer00.png")) {
             new_input["id"] = "4dXGR8";
             new_input["filepath"] = "/media/previz/buffer00.png";
             new_input["type"] = "buffer";
-        } else if (img_path == "../../media/icons/buffer01.png") {
+        } else if (img_path_normalized == rel_icon("media/icons/buffer01.png")) {
             new_input["id"] = "XsXGR8";
             new_input["filepath"] = "/media/previz/buffer01.png";
             new_input["type"] = "buffer";
-        } else if (img_path == "../../media/icons/buffer02.png") {
+        } else if (img_path_normalized == rel_icon("media/icons/buffer02.png")) {
             new_input["id"] = "4sXGR8";
             new_input["filepath"] = "/media/previz/buffer02.png";
             new_input["type"] = "buffer";
-        } else if (img_path == "../../media/icons/buffer03.png") {
+        } else if (img_path_normalized == rel_icon("media/icons/buffer03.png")) {
             new_input["id"] = "XdfGR8";
             new_input["filepath"] = "/media/previz/buffer03.png";
             new_input["type"] = "buffer";
-        } else if (img_path == "../../media/icons/cubemap00.png") {
+        } else if (img_path_normalized == rel_icon("media/icons/cubemap00.png")) {
             new_input["id"] = "4dX3Rr";
             new_input["filepath"] = "/media/previz/cubemap00.png";
             new_input["type"] = "cubemap";
         }
     } break;
     case 1: {
-        new_input["filepath"] = img_path;
+        auto fp = img_path_normalized;
+        if (auto pos = fp.find("media/images/"); pos != std::string::npos) {
+            fp = "/media/a/" + fp.substr(pos + std::string{"media/images/"}.size());
+        } else if (!fp.starts_with("/")) {
+            fp = "/" + fp;
+        }
+        new_input["filepath"] = fp;
         new_input["type"] = "texture";
         new_input["sampler"]["filter"] = "mipmap";
         new_input["sampler"]["wrap"] = "repeat";
     } break;
     case 2: {
-        new_input["filepath"] = img_path;
+        auto fp = img_path_normalized;
+        if (auto pos = fp.find("media/images/"); pos != std::string::npos) {
+            fp = "/media/a/" + fp.substr(pos + std::string{"media/images/"}.size());
+        } else if (!fp.starts_with("/")) {
+            fp = "/" + fp;
+        }
+        new_input["filepath"] = fp;
         new_input["type"] = "cubemap";
     } break;
     case 3: {
-        if (img_path == "../../media/icons/volume_gray.png") {
+        if (img_path_normalized == rel_icon("media/icons/volume_gray.png")) {
             new_input["id"] = "4sfGRr";
             new_input["filepath"] = "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin";
             new_input["type"] = "volume";
-        } else if (img_path == "../../media/icons/buffer00.png") {
+        } else if (img_path_normalized == rel_icon("media/icons/volume_rgba.png")) {
+            new_input["id"] = "XdX3Rr";
+            new_input["filepath"] = "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin";
+            new_input["type"] = "volume";
+        } else if (img_path_normalized == rel_icon("media/icons/buffer00.png")) {
             new_input["id"] = "XdX3Rr";
             new_input["filepath"] = "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin";
             new_input["type"] = "volume";
         }
     } break;
+    default: break;
     }
 
-    auto *channel_input = find_input(pass, channel_index);
+    auto *channel_input = find_input(pass, bpiw_target_channel);
     if (channel_input != nullptr) {
         *channel_input = new_input;
     } else {
         pass["inputs"].push_back(new_input);
     }
 
-    bpiw_dragging = false;
-    open_ichannel_img_element = nullptr;
-    bpiw_element->SetProperty("display", "none");
-    bpiw_element->Blur();
+    show_bpiw = false;
     dirty = true;
 }
-void BufferPanel::buffer_panel_ichannel_close(Rml::Event &event, std::string const &active_pass_name) {
-    if (active_pass_name.empty()) {
+
+void BufferPanel::draw_tabs_and_add() {
+    auto const count = pass_count();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{6.f, 3.f});
+    ImGui::SetCursorPosX(4.f);
+    if (ImGui::Button("+", ImVec2{22.f, 20.f})) {
+        ImGui::OpenPopup("AddPassPopup");
+    }
+    ImVec2 const add_btn_min = ImGui::GetItemRectMin();
+    ImVec2 const add_btn_max = ImGui::GetItemRectMax();
+    if (ImGui::IsPopupOpen("AddPassPopup", ImGuiPopupFlags_None)) {
+        ImGui::SetNextWindowPos(ImVec2{add_btn_min.x, add_btn_max.y}, ImGuiCond_Appearing);
+    }
+    if (ImGui::BeginPopup("AddPassPopup")) {
+        auto try_add = [&](char const *label, char const *kind) {
+            if (find_pass(json, kind) == nullptr && ImGui::Selectable(label)) {
+                add_pass(kind);
+                ImGui::CloseCurrentPopup();
+            }
+        };
+        try_add("Common", "Common");
+        try_add("Buffer A", "Buffer A");
+        try_add("Buffer B", "Buffer B");
+        try_add("Buffer C", "Buffer C");
+        try_add("Buffer D", "Buffer D");
+        try_add("Cube A", "Cube A");
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(30.f);
+    if (ImGui::BeginTabBar("PassTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        for (int i = 0; i < count; ++i) {
+            auto name = pass_name_at(i);
+            bool open = true;
+            bool const is_image = (name == "Image");
+            if (ImGui::BeginTabItem(name.c_str(), is_image ? nullptr : &open)) {
+                if (active_tab != i) {
+                    sync_active_pass_code_to_json();
+                    active_tab = i;
+                    channel_show_sampler = {};
+                }
+                ImGui::EndTabItem();
+            }
+            if (!is_image && !open) {
+                sync_active_pass_code_to_json();
+                close_tab(i);
+                break;
+            }
+        }
+        ImGui::EndTabBar();
+    }
+    ImGui::PopStyleVar();
+
+    auto const line_y = ImGui::GetCursorScreenPos().y;
+    auto const line_x0 = ImGui::GetWindowPos().x;
+    auto const line_x1 = line_x0 + ImGui::GetWindowWidth();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2{line_x0, line_y},
+        ImVec2{line_x1, line_y + ui_layout::k_tab_orange_border},
+        IM_COL32(248, 176, 48, 255));
+    ImGui::Dummy(ImVec2{0.f, ui_layout::k_tab_orange_border});
+}
+
+void BufferPanel::draw_shader_input_section() {
+    ImGui::PushStyleColor(ImGuiCol_Header, ui_theme::k_shader_input_header);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4{0.80f, 0.80f, 0.80f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4{0.72f, 0.72f, 0.72f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_Border, ui_theme::k_editor_border);
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_None;
+    if (show_shader_input) {
+        flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    }
+    if (ImGui::CollapsingHeader("Shader Input", flags)) {
+        show_shader_input = true;
+
+        bool const use_code_font = AppUi::s_instance != nullptr && AppUi::s_instance->code_font != nullptr;
+        if (use_code_font) {
+            ImGui::PushFont(AppUi::s_instance->code_font);
+        }
+
+        static constexpr int k_uniform_line_count = 11;
+        ImVec2 const body_pad{8.f, 6.f};
+        float const line_h = ImGui::GetTextLineHeightWithSpacing();
+        float const box_h = line_h * static_cast<float>(k_uniform_line_count) + body_pad.y * 2.f;
+
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ui_theme::k_shader_input_body);
+        ImGui::PushStyleColor(ImGuiCol_Text, ui_theme::k_editor_text);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, body_pad);
+        ImGui::BeginChild("ShaderInputBody", ImVec2{-1.f, box_h}, true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::TextUnformatted("uniform vec3  iResolution;   // viewport resolution (in pixels)");
+        ImGui::TextUnformatted("uniform float iTime;         // shader playback time (in seconds)");
+        ImGui::TextUnformatted("uniform float iTimeDelta;    // render time (in seconds)");
+        ImGui::TextUnformatted("uniform float iFrameRate;    // shader frame rate");
+        ImGui::TextUnformatted("uniform int   iFrame;        // shader playback frame");
+        ImGui::TextUnformatted("uniform float iChannelTime[4];");
+        ImGui::TextUnformatted("uniform vec3  iChannelResolution[4];");
+        ImGui::TextUnformatted("uniform vec4  iMouse;");
+        ImGui::TextUnformatted("uniform samplerXX iChannel0..3;");
+        ImGui::TextUnformatted("uniform vec4  iDate;");
+        ImGui::TextUnformatted("uniform float iSampleRate;");
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+
+        if (use_code_font) {
+            ImGui::PopFont();
+        }
+    } else {
+        show_shader_input = false;
+    }
+    ImGui::PopStyleColor(4);
+}
+
+auto BufferPanel::active_pass_is_common() const -> bool {
+    if (active_tab < 0 || active_tab >= pass_count()) {
+        return false;
+    }
+    auto const &renderpass = json["renderpass"][active_tab];
+    return renderpass.contains("type") && renderpass["type"] == "common";
+}
+
+void BufferPanel::draw_code_editor(float editor_height) {
+    auto const pass_name = active_pass_name();
+    if (pass_name.empty()) {
         return;
     }
-    auto *pass_ptr = find_pass(active_pass_name);
+    auto it = pass_code_buffers.find(pass_name);
+    if (it == pass_code_buffers.end()) {
+        return;
+    }
+    auto &buf = it->second;
+    if (buf.size() < pass_code_max_chars + 1) {
+        buf.resize(pass_code_max_chars + 1, '\0');
+    }
+
+    int const editor_style = ui_theme::push_code_editor_style();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4.f, 4.f});
+    ImGui::BeginChild("CodeEditor", ImVec2{-1.f, editor_height}, true);
+    ImGui::PushID(pass_name.c_str());
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->code_font != nullptr) {
+        ImGui::PushFont(AppUi::s_instance->code_font);
+    }
+    ImGuiInputTextFlags const flags = ImGuiInputTextFlags_AllowTabInput;
+    ImGui::InputTextMultiline("##code", buf.data(), buf.size(), ImVec2{-1.f, -1.f}, flags);
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->code_font != nullptr) {
+        ImGui::PopFont();
+    }
+    ImGui::PopID();
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ui_theme::pop_code_editor_style(editor_style);
+}
+
+void BufferPanel::draw_code_toolbar() {
+    auto const pass_name = active_pass_name();
+    if (pass_name.empty()) {
+        return;
+    }
+    auto it = pass_code_buffers.find(pass_name);
+    if (it == pass_code_buffers.end()) {
+        return;
+    }
+    auto &buf = it->second;
+
+    auto const width = ImGui::GetContentRegionAvail().x;
+    auto const height = ui_layout::k_code_toolbar_height;
+    auto const pos = ImGui::GetCursorScreenPos();
+    auto const rounding = ui_layout::k_code_toolbar_corner_radius;
+    auto const rect_max = ImVec2{pos.x + width, pos.y + height};
+    auto *draw = ImGui::GetWindowDrawList();
+    auto const bg = ImGui::ColorConvertFloat4ToU32(ui_theme::k_toolbar_bg);
+    auto const border = ImGui::ColorConvertFloat4ToU32(ui_theme::k_editor_border);
+    draw->AddRectFilled(pos, rect_max, bg, rounding);
+    draw->AddRect(pos, rect_max, border, rounding);
+
+    auto const used = std::strlen(buf.data());
+    auto const row_y = pos.y + (height - ui_layout::k_bottom_bar_icon_size) * 0.5f;
+    auto const icon_size = ImVec2{ui_layout::k_bottom_bar_icon_size, ui_layout::k_bottom_bar_icon_size};
+    auto const icon_gap = 4.f;
+    auto const right_pad = 4.f;
+
+    ImGui::SetCursorScreenPos(ImVec2{pos.x + 4.f, row_y});
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->icons.compile.tex_id != nullptr) {
+        if (AppUi::s_instance->icons.image_button("##compile", AppUi::s_instance->icons.compile, icon_size)) {
+            compile_shader();
+        }
+    } else if (ImGui::Button("\xE2\x96\xB6", icon_size)) {
+        compile_shader();
+    }
+
+    auto const stats = fmt::format("{}/{}", used, pass_code_max_chars);
+    auto const stats_w = ImGui::CalcTextSize(stats.c_str()).x;
+    ImGui::SetCursorScreenPos(ImVec2{pos.x + (width - stats_w) * 0.5f, row_y + 2.f});
+    ImGui::TextUnformatted(stats.c_str());
+
+    auto const right_icon_x = pos.x + width - right_pad - icon_size.x;
+    ImGui::SetCursorScreenPos(ImVec2{right_icon_x, row_y});
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->icons.font_size.tex_id != nullptr) {
+        if (AppUi::s_instance->icons.image_button("##fontsize", AppUi::s_instance->icons.font_size, icon_size)) {
+            ImGui::OpenPopup("CodeFontSizePopup");
+        }
+        auto const btn_max = ImGui::GetItemRectMax();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{8.f, 4.f});
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0.f);
+        ImGui::SetNextWindowPos(ImVec2{btn_max.x, pos.y}, ImGuiCond_Appearing, ImVec2{1.f, 1.f});
+        if (ImGui::BeginPopup("CodeFontSizePopup")) {
+            for (size_t i = 0; i < AppUi::k_code_font_sizes.size(); ++i) {
+                auto const label = fmt::format("{:.0f}", AppUi::k_code_font_sizes[i]);
+                bool const selected = static_cast<int>(i) == AppUi::s_instance->code_font_size_index;
+                if (ImGui::MenuItem(label.c_str(), nullptr, selected)) {
+                    AppUi::s_instance->set_code_font_size(static_cast<int>(i));
+                }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar(2);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2{right_icon_x - icon_gap - icon_size.x, row_y});
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->icons.open_file.tex_id != nullptr) {
+        if (AppUi::s_instance->icons.image_button("##openfile", AppUi::s_instance->icons.open_file, icon_size)) {
+            load_json_from_dialog();
+        }
+    } else if (ImGui::Button("...", icon_size)) {
+        load_json_from_dialog();
+    }
+
+    ImGui::SetCursorScreenPos(pos);
+    ImGui::Dummy(ImVec2{width, height});
+}
+
+void BufferPanel::draw_channels() {
+    auto const pass_name = active_pass_name();
+    if (pass_name.empty()) {
+        return;
+    }
+    auto *pass_ptr = find_pass(json, pass_name);
     if (pass_ptr == nullptr) {
         return;
     }
     auto &pass = *pass_ptr;
-
-    auto *datagrid_column = event.GetCurrentElement()->GetParentNode()->GetParentNode();
-    auto *ichannel = datagrid_column->GetChild(0);
-
-    auto ichannel_name = ichannel->GetId();
-    auto channel_index = int(ichannel_name[8]) - int('0');
-
-    int current_index = 0;
-    for (auto &input : pass["inputs"]) {
-        if (input["channel"] == channel_index) {
-            auto *ichannel_label = datagrid_column->GetChild(1);
-            auto *ichannel_label_settings = ichannel_label->GetChild(1);
-
-            auto *ichannel_img = ichannel->GetChild(0);
-            auto *ichannel_sampler_menu = ichannel->GetChild(1);
-            auto *ichannel_close = ichannel->GetChild(2);
-
-            ichannel_img->SetAttribute("style", "display: inline-block; image-color: #000000;");
-            ichannel_img->SetAttribute("src", "");
-            ichannel_close->SetAttribute("style", "display: none;");
-            ichannel_sampler_menu->SetAttribute("style", "display: none;");
-            ichannel_label_settings->SetAttribute("style", "display: none;");
-
-            pass["inputs"].erase(current_index);
-            dirty = true;
-            break;
-        }
-        ++current_index;
+    if (pass.contains("type") && pass["type"] == "common") {
+        return;
     }
-}
-void BufferPanel::buffer_panel_add(Rml::Event &event) {
-    auto *buffer_panel_add_panel = event.GetCurrentElement()->GetElementById("buffer_panel_add_panel");
-    buffer_panel_add_panel->SetAttribute("style", "display: inline-block;");
-    buffer_panel_add_panel->Focus();
-
-    auto *buffer_panel_add_common = buffer_panel_add_panel->GetElementById("buffer_panel_add_common");
-    auto *buffer_panel_add_buffer00 = buffer_panel_add_panel->GetElementById("buffer_panel_add_buffer00");
-    auto *buffer_panel_add_buffer01 = buffer_panel_add_panel->GetElementById("buffer_panel_add_buffer01");
-    auto *buffer_panel_add_buffer02 = buffer_panel_add_panel->GetElementById("buffer_panel_add_buffer02");
-    auto *buffer_panel_add_buffer03 = buffer_panel_add_panel->GetElementById("buffer_panel_add_buffer03");
-    auto *buffer_panel_add_cubemap00 = buffer_panel_add_panel->GetElementById("buffer_panel_add_cubemap00");
-
-    auto add_option_to_list = [&](auto &&name, auto *option_element) {
-        auto *channel_input = find_pass(name);
-        if (channel_input != nullptr) {
-            // pass already exists, hide it
-            option_element->SetAttribute("style", "display: none;");
-        } else {
-            // show it in the list
-            option_element->SetAttribute("style", "display: block;");
-        }
-    };
-
-    add_option_to_list("Common", buffer_panel_add_common);
-    add_option_to_list("Buffer A", buffer_panel_add_buffer00);
-    add_option_to_list("Buffer B", buffer_panel_add_buffer01);
-    add_option_to_list("Buffer C", buffer_panel_add_buffer02);
-    add_option_to_list("Buffer D", buffer_panel_add_buffer03);
-    add_option_to_list("Cube A", buffer_panel_add_cubemap00);
-}
-void BufferPanel::buffer_panel_add_option(Rml::Event &event) {
-    auto *buffer_panel_add_panel = event.GetCurrentElement()->GetElementById("buffer_panel_add_panel");
-    buffer_panel_add_panel->SetAttribute("style", "display: none;");
-    buffer_panel_add_panel->Blur();
-
-    // Add the buffer to the passes
-    // NOTE(grundlett): I'll just modify the json and reload it...
 
     auto &renderpasses = json["renderpass"];
+    auto const slot_w = ui_layout::k_channel_col_width;
+    auto const slot_h = ui_layout::k_ichannel_slot_height;
+    auto const label_h = ui_layout::k_ichannel_label_height;
 
-    auto new_pass = nlohmann::json{};
-    auto element_id = event.GetCurrentElement()->GetId();
+    refresh_bpiw_preview_textures();
 
-    auto iter = renderpasses.begin();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{0.f, 0.f});
+    ImGui::BeginGroup();
+    for (int ch = 0; ch < 4; ++ch) {
+        if (ch > 0) {
+            ImGui::SameLine(0.f, ui_layout::k_channel_col_spacer);
+        }
+        ImGui::BeginGroup();
+        ImGui::PushID(ch);
 
-    if (element_id != "buffer_panel_add_common") {
-        // find image pass
-        while (iter != renderpasses.end()) {
-            // Buffer passes should always be before the cube/image passes.
-            if ((*iter)["name"] == "Image" || (*iter)["name"] == "Cube A") {
-                break;
+        auto *input = find_input(pass, ch);
+        bool const has_input = input != nullptr;
+        auto const close_size = ImVec2{18.f, 18.f};
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.f, 0.f, 0.f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.15f, 0.15f, 0.15f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.25f, 0.25f, 0.25f, 1.f});
+        if (ImGui::Button("##slot", ImVec2{slot_w, slot_h})) {
+            auto const click_min = ImGui::GetItemRectMin();
+            auto const close_min = ImVec2{click_min.x + slot_w - close_size.x - 8.f, click_min.y};
+            auto const close_max = ImVec2{close_min.x + close_size.x, close_min.y + close_size.y};
+            if (has_input && ImGui::IsMouseHoveringRect(close_min, close_max)) {
+                remove_channel_input(pass_name, ch);
+                channel_show_sampler[ch] = false;
+            } else {
+                show_bpiw = true;
+                bpiw_pass_name = pass_name;
+                bpiw_target_channel = ch;
             }
-            ++iter;
         }
-    }
+        ImGui::PopStyleColor(3);
 
-    if (iter == renderpasses.end()) {
-        // should never happen
-        return;
-    }
+        auto const slot_min = ImGui::GetItemRectMin();
+        auto const slot_max = ImGui::GetItemRectMax();
+        auto const label_y = slot_max.y;
+        auto *draw = ImGui::GetWindowDrawList();
 
-    if (element_id == "buffer_panel_add_common") {
-        new_pass = nlohmann::json::parse(R"({
-                "outputs": [],
-                "inputs": [],
-                "code": "vec4 someFunction( vec4 a, float b )\n{\n    return a+b;\n}",
-                "name": "Common",
-                "description": "",
-                "type": "common"
-            })");
-    } else if (element_id == "buffer_panel_add_buffer00") {
-        new_pass = nlohmann::json::parse(R"({
-                "outputs": [
-                    {
-                        "channel": 0,
-                        "id": "4dXGR8"
+        if (has_input) {
+            if (!channel_show_sampler[ch]) {
+                auto const preview_path = channel_preview_path(*input, renderpasses);
+                draw_channel_slot_preview(slot_min, slot_max, preview_path);
+            }
+
+            auto const close_min = ImVec2{slot_min.x + slot_w - close_size.x - 8.f, slot_min.y};
+            auto const close_max = ImVec2{close_min.x + close_size.x, close_min.y + close_size.y};
+            draw->AddRectFilled(close_min, close_max, IM_COL32(0, 0, 0, 153));
+            auto const close_label_size = ImGui::CalcTextSize("X");
+            draw->AddText(
+                ImVec2{close_min.x + (close_size.x - close_label_size.x) * 0.5f, close_min.y + (close_size.y - close_label_size.y) * 0.5f},
+                IM_COL32(255, 255, 255, 255),
+                "X");
+
+            if (channel_show_sampler[ch]) {
+                ImGui::SetCursorScreenPos(slot_min);
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{1.f, 1.f, 1.f, 1.f});
+                ImGui::BeginChild("SamplerMenu", ImVec2{slot_w, slot_h}, true);
+                auto filter = input->contains("sampler") && (*input)["sampler"].contains("filter")
+                                  ? (*input)["sampler"]["filter"].get<std::string>()
+                                  : "linear";
+                auto wrap = input->contains("sampler") && (*input)["sampler"].contains("wrap")
+                                ? (*input)["sampler"]["wrap"].get<std::string>()
+                                : "repeat";
+                if (ImGui::BeginCombo("Filter", filter.c_str())) {
+                    for (auto const *opt : {"nearest", "linear", "mipmap"}) {
+                        if (ImGui::Selectable(opt, filter == opt)) {
+                            (*input)["sampler"]["filter"] = opt;
+                            dirty = true;
+                        }
                     }
-                ],
-                "inputs": [],
-                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
-                "name": "Buffer A",
-                "description": "",
-                "type": "buffer"
-            })");
-    } else if (element_id == "buffer_panel_add_buffer01") {
-        new_pass = nlohmann::json::parse(R"({
-                "outputs": [
-                    {
-                        "channel": 0,
-                        "id": "XsXGR8"
+                    ImGui::EndCombo();
+                }
+                if (ImGui::BeginCombo("Wrap", wrap.c_str())) {
+                    for (auto const *opt : {"clamp", "repeat"}) {
+                        if (ImGui::Selectable(opt, wrap == opt)) {
+                            (*input)["sampler"]["wrap"] = opt;
+                            dirty = true;
+                        }
                     }
-                ],
-                "inputs": [],
-                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
-                "name": "Buffer B",
-                "description": "",
-                "type": "buffer"
-            })");
-    } else if (element_id == "buffer_panel_add_buffer02") {
-        new_pass = nlohmann::json::parse(R"({
-                "outputs": [
-                    {
-                        "channel": 0,
-                        "id": "4sXGR8"
-                    }
-                ],
-                "inputs": [],
-                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
-                "name": "Buffer C",
-                "description": "",
-                "type": "buffer"
-            })");
-    } else if (element_id == "buffer_panel_add_buffer03") {
-        new_pass = nlohmann::json::parse(R"({
-                "outputs": [
-                    {
-                        "channel": 0,
-                        "id": "XdfGR8"
-                    }
-                ],
-                "inputs": [],
-                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
-                "name": "Buffer D",
-                "description": "",
-                "type": "buffer"
-            })");
-    } else if (element_id == "buffer_panel_add_cubemap00") {
-        new_pass = nlohmann::json::parse(R"({
-                "outputs": [
-                    {
-                        "channel": 0,
-                        "id": "4dX3Rr"
-                    }
-                ],
-                "inputs": [],
-                "code": "void mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    // Ray direction as color\n    vec3 col = 0.5 + 0.5*rayDir;\n\n    // Output to cubemap\n    fragColor = vec4(col,1.0);\n}",
-                "name": "Cube A",
-                "description": "",
-                "type": "cubemap"
-            })");
+                    ImGui::EndCombo();
+                }
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+            }
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2{slot_min.x, label_y});
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{1.f, 1.f, 1.f, 1.f});
+        ImGui::BeginChild("ChannelLabel", ImVec2{slot_w, label_h}, false, ImGuiWindowFlags_NoScrollbar);
+        ImGui::Text("iChannel%d", ch);
+        if (has_input) {
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(slot_w - 28.f);
+            if (AppUi::s_instance != nullptr && AppUi::s_instance->icons.settings.tex_id != nullptr) {
+                if (AppUi::s_instance->icons.image_button("##chset", AppUi::s_instance->icons.settings)) {
+                    channel_show_sampler[ch] = !channel_show_sampler[ch];
+                }
+            } else if (ImGui::SmallButton("Set")) {
+                channel_show_sampler[ch] = !channel_show_sampler[ch];
+            }
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+
+        ImGui::PopID();
+        ImGui::EndGroup();
     }
-
-    auto tab_index = static_cast<int32_t>(iter - renderpasses.begin());
-
-    renderpasses.insert(iter, new_pass);
-    reload_json();
-
-    tabs_element->SetActiveTab(tab_index);
+    ImGui::EndGroup();
+    ImGui::PopStyleVar();
 }
-void BufferPanel::buffer_panel_tab_close(Rml::Event &event) {
-    auto &renderpasses = json["renderpass"];
 
-    auto new_pass = nlohmann::json{};
-    auto *element = event.GetCurrentElement();
-    auto *parent = element->GetParentNode();
-    auto *content_div = parent->GetChild(0);
-    auto *tab_content =
-        content_div != nullptr ? dynamic_cast<Rml::ElementText *>(content_div->GetChild(0)) : nullptr;
-    if (tab_content == nullptr) {
+void BufferPanel::draw_bpiw_modal() {
+    if (!show_bpiw) {
         return;
     }
 
-    auto name = tab_content->GetText();
+    refresh_bpiw_preview_textures();
 
-    auto iter = renderpasses.begin();
-    while (iter != renderpasses.end()) {
-        if ((*iter)["name"] == name) {
-            break;
-        }
-        ++iter;
-    }
-
-    if (iter == renderpasses.end()) {
-        // Should never happen
+    ImGui::SetNextWindowSize(ImVec2{ui_layout::k_bpiw_window_w, ui_layout::k_bpiw_window_h}, ImGuiCond_Always);
+    ImGui::OpenPopup("BpiwSelectInput");
+    ImGuiWindowFlags const popup_flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
+    if (!ImGui::BeginPopupModal("BpiwSelectInput", &show_bpiw, popup_flags)) {
         return;
     }
 
-    renderpasses.erase(iter);
-    // Cope because we are about to rebuild the UI while it's propagating the events
-    event.StopImmediatePropagation();
-    reload_json();
-}
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4{0.933f, 0.933f, 0.933f, 1.f});
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4{0.455f, 0.455f, 0.455f, 1.f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{4.f, 0.f});
+    int const tab_style = ui_theme::push_buffer_panel_style();
 
-void BufferPanel::buffer_panel_compile_shader(Rml::Event &) {
-    sync_all_panel_textareas_to_json();
-    dirty = true;
-    update_active_tab_code_stats_display();
-}
-
-void BufferPanel::buffer_panel_load_json() {
-    if (AppUi::s_instance != nullptr) {
-        AppUi::s_instance->load_json();
+    if (ImGui::BeginTabBar("BpiwTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        if (ImGui::BeginTabItem("Misc")) {
+            draw_bpiw_orange_separator();
+            draw_bpiw_option_grid(misc_bpiw_options(), 0, [&](BpiwOption const &opt) { apply_bpiw_selection(opt.img_path, 0); });
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Textures")) {
+            draw_bpiw_orange_separator();
+            draw_bpiw_option_grid(texture_bpiw_options(), 1, [&](BpiwOption const &opt) { apply_bpiw_selection(opt.img_path, 1); });
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Cubemaps")) {
+            draw_bpiw_orange_separator();
+            draw_bpiw_option_grid(cubemap_bpiw_options(), 2, [&](BpiwOption const &opt) { apply_bpiw_selection(opt.img_path, 2); });
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Volumes")) {
+            draw_bpiw_orange_separator();
+            draw_bpiw_option_grid(volume_bpiw_options(), 3, [&](BpiwOption const &opt) { apply_bpiw_selection(opt.img_path, 3); });
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
+
+    ui_theme::pop_buffer_panel_style(tab_style);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+
+    ImGui::EndPopup();
 }
 
-void BufferPanel::on_tab_changed() {
-    if (during_shader_load) {
+void BufferPanel::draw_compile_error_modal() {
+    if (!show_compile_error_dialog || compile_message.empty()) {
         return;
     }
-    sync_all_panel_textareas_to_json();
-    update_active_tab_code_stats_display();
-}
 
-void BufferPanel::sync_all_panel_textareas_to_json() {
-    if (tabs_element == nullptr) {
+    ImGui::OpenPopup("ShaderCompileError");
+    auto const center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2{0.5f, 0.5f});
+    ImGui::SetNextWindowSize(ImVec2{680.f, 420.f}, ImGuiCond_Appearing);
+
+    ImGuiWindowFlags const popup_flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
+    if (!ImGui::BeginPopupModal("ShaderCompileError", &show_compile_error_dialog, popup_flags)) {
         return;
     }
-    auto *panels = tabs_element->GetChild(1);
-    for (int i = 0; i < panels->GetNumChildren(); ++i) {
-        auto *panel = panels->GetChild(i);
-        auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(find_descendant_by_class(panel, "buffer_pass_code_editor"));
-        if (ta == nullptr) {
-            continue;
-        }
-        auto *attr = ta->GetAttribute("data-pass");
-        if (attr == nullptr) {
-            continue;
-        }
-        auto pass_name = attr->Get<Rml::String>();
-        auto name = std::string(pass_name.data(), pass_name.size());
-        auto *pass_ptr = find_pass(name);
-        if (pass_ptr == nullptr || !(*pass_ptr).contains("code") || !(*pass_ptr)["code"].is_string()) {
-            continue;
-        }
-        auto &pass = *pass_ptr;
-        auto new_code = std::string(ta->GetValue());
-        if (pass["code"].get<std::string>() != new_code) {
-            pass["code"] = new_code;
-        }
+
+    ImGui::TextUnformatted("Shader compilation failed");
+    ImGui::Separator();
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui_theme::k_shader_input_body);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.75f, 0.1f, 0.1f, 1.f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{8.f, 8.f});
+    ImGui::BeginChild("CompileErrorScroll", ImVec2{-1.f, -ImGui::GetFrameHeightWithSpacing() - 12.f}, true);
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->code_font != nullptr) {
+        ImGui::PushFont(AppUi::s_instance->code_font);
     }
+    ImGui::TextUnformatted(compile_message.c_str());
+    if (AppUi::s_instance != nullptr && AppUi::s_instance->code_font != nullptr) {
+        ImGui::PopFont();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 80.f) * 0.5f);
+    if (ImGui::Button("Close", ImVec2{80.f, 0.f})) {
+        show_compile_error_dialog = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
-void BufferPanel::update_active_tab_code_stats_display() {
-    if (tabs_element == nullptr) {
-        return;
-    }
-    auto const idx = tabs_element->GetActiveTab();
-    auto *panels = tabs_element->GetChild(1);
-    if (idx < 0 || idx >= panels->GetNumChildren()) {
-        return;
-    }
-    auto *ta = dynamic_cast<Rml::ElementFormControlTextArea *>(
-        find_descendant_by_class(panels->GetChild(idx), "buffer_pass_code_editor"));
-    if (ta != nullptr) {
-        set_code_stats_for_textarea(ta);
-    }
-}
+void BufferPanel::draw(float panel_width, float panel_height) {
+    auto const display_w = ImGui::GetIO().DisplaySize.x;
+    ImGui::SetNextWindowPos(ImVec2{display_w - panel_width, 0.f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2{panel_width, panel_height}, ImGuiCond_Always);
 
-void BufferPanel::buffer_panel_shader_input_toggle(Rml::Event &event) {
-    Rml::Element *node = event.GetCurrentElement();
-    Rml::Element *header = nullptr;
-    while (node != nullptr) {
-        if (node->GetClassNames().find("shader_input_header") != Rml::String::npos) {
-            header = node;
-            break;
-        }
-        node = node->GetParentNode();
-    }
-    if (header == nullptr) {
-        return;
-    }
-    Rml::Element *wrap = header->GetParentNode();
-    if (wrap == nullptr || wrap->GetNumChildren() < 2) {
-        return;
-    }
-    Rml::Element *body = wrap->GetChild(1);
-    Rml::Element *chevron = nullptr;
-    if (auto *first = header->GetChild(0); first != nullptr) {
-        if (first->GetClassNames().find("shader_input_chevron_cell") != Rml::String::npos &&
-            first->GetNumChildren() > 0) {
-            chevron = first->GetChild(0);
-        } else if (first->GetClassNames().find("shader_input_chevron") != Rml::String::npos) {
-            chevron = first;
-        }
-    }
-    if (chevron == nullptr) {
-        return;
-    }
-    auto const display = body->GetProperty("display")->ToString();
-    if (display == "none") {
-        body->SetProperty("display", "block");
-        chevron->SetAttribute("class", "shader_input_chevron shader_input_chevron_expanded");
-    } else {
-        body->SetProperty("display", "none");
-        chevron->SetAttribute("class", "shader_input_chevron shader_input_chevron_collapsed");
-    }
-}
+    int const style_count = ui_theme::push_buffer_panel_style();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0.f, 1.f});
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{4.f, 0.f});
+    ImGuiWindowFlags const flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse;
+    if (ImGui::Begin("BufferPanel", nullptr, flags)) {
+        draw_tabs_and_add();
 
-void BufferPanel::cleanup() {
-    delete common_file_edit_state;
-    delete buffer00_file_edit_state;
-    delete buffer01_file_edit_state;
-    delete buffer02_file_edit_state;
-    delete buffer03_file_edit_state;
-    delete cubemap00_file_edit_state;
-    delete image_file_edit_state;
+        auto const body_h = ImGui::GetContentRegionAvail().y;
+        ImGuiWindowFlags const body_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        ImGui::BeginChild("BufferPanelBody", ImVec2{-1.f, body_h}, false, body_flags);
 
-    common_file_edit_state = nullptr;
-    buffer00_file_edit_state = nullptr;
-    buffer01_file_edit_state = nullptr;
-    buffer02_file_edit_state = nullptr;
-    buffer03_file_edit_state = nullptr;
-    cubemap00_file_edit_state = nullptr;
-    image_file_edit_state = nullptr;
-}
+        draw_shader_input_section();
 
-void BufferPanel::update() {
-    auto code_changed = false;
+        bool const is_common = active_pass_is_common();
+        float const channels_h = is_common ? 0.f : ui_layout::k_ichannel_row_height;
+        auto const spacing = ImGui::GetStyle().ItemSpacing.y;
+        float const footer_h = ui_layout::k_code_toolbar_height + channels_h + (channels_h > 0.f ? spacing : 0.f);
+        float const editor_h = std::max(ImGui::GetContentRegionAvail().y - footer_h, 72.f);
 
-    auto update_edit_state = [&](BufferFileEditState *edit_state_ptr) {
-        if (edit_state_ptr == nullptr) {
-            return;
-        }
-        if (!edit_state_ptr->modified.load()) {
-            return;
-        }
+        draw_code_editor(editor_h);
+        draw_code_toolbar();
 
-        // if it was modified, we want to update the shader.
-
-        auto new_content = [&]() {
-            auto file = std::ifstream(edit_state_ptr->path);
-            std::stringstream buffer;
-            buffer << file.rdbuf();
-            return buffer.str();
-        }();
-
-        if (new_content.empty()) {
-            return;
-        }
-
-        auto *pass_ptr = find_pass(edit_state_ptr->name);
-        if (pass_ptr == nullptr) {
-            // Shouldn't ever happen
-            return;
-        }
-        auto &pass = *pass_ptr;
-        auto old_content = std::string(pass["code"]);
-        if (new_content != old_content) {
-            pass["code"] = new_content;
-            code_changed = true;
-        }
-    };
-
-    update_edit_state(common_file_edit_state);
-    update_edit_state(buffer00_file_edit_state);
-    update_edit_state(buffer01_file_edit_state);
-    update_edit_state(buffer02_file_edit_state);
-    update_edit_state(buffer03_file_edit_state);
-    update_edit_state(cubemap00_file_edit_state);
-    update_edit_state(image_file_edit_state);
-
-    if (code_changed) {
-        AppUi::s_instance->buffer_panel.reload_json();
-    }
-}
-
-void BufferPanel::load_shadertoy_json(nlohmann::json const &temp_json) {
-    if (temp_json.contains("numShaders")) {
-        // Is a "export all shaders" json file. Let's split it up for the user.
-        for (auto &shader : temp_json["shaders"]) {
-            auto filepath = std::string{"shader_"} + std::string{shader["info"]["id"]} + std::string{".json"};
-            auto f = std::ofstream(filepath);
-            f << std::setw(4) << shader;
-        }
-
-        json = temp_json["shaders"][0];
-    } else if (temp_json.contains("Shader")) {
-        json = temp_json["Shader"];
-    } else {
-        json = temp_json;
-    }
-    cleanup();
-    reload_json();
-}
-void BufferPanel::reload_json() {
-    during_shader_load = true;
-
-    auto &renderpasses = json["renderpass"];
-
-    auto tab_index = 0;
-
-    auto tab_count = tabs_element->GetNumTabs();
-    for (auto tab_i = 0; tab_i < tab_count; ++tab_i) {
-        tabs_element->RemoveTab(tab_count - tab_i - 1);
-    }
-
-    for (auto &renderpass : renderpasses) {
-        auto name = std::string{renderpass["name"]};
-
-        if (name == "Image") {
-            tabs_element->SetTab(tab_index, fmt::format("<template src=\"buffer_tab_image\">{}</template>", name));
-        } else {
-            tabs_element->SetTab(tab_index, fmt::format("<template src=\"buffer_tab\">{}</template>", name));
-        }
-        tabs_element->SetPanel(tab_index, "<template src=\"buffer_panel\"> </template>");
-
-        auto *panels = tabs_element->GetChild(1);
-        auto *panel = panels->GetChild(tab_index);
-        auto *datagrid = find_descendant_by_tag(panel, "datagrid");
-        if (datagrid == nullptr) {
-            ++tab_index;
-            continue;
-        }
-        auto *datagrid_header = datagrid->GetChild(0);
-
-        auto *editor_wrap = find_descendant_by_class(panel, "buffer_pass_code_editor_wrap");
-        auto *ta_el = find_descendant_by_class(panel, "buffer_pass_code_editor");
-        auto *pass_code_ta = dynamic_cast<Rml::ElementFormControlTextArea *>(ta_el);
-
-        auto &inputs = renderpass["inputs"];
-
-        auto const is_common = renderpass["type"] == "common";
-
-        if (editor_wrap != nullptr) {
-            editor_wrap->RemoveAttribute("style");
-        }
-        if (is_common) {
-            datagrid->SetAttribute("style", "display: none;");
-        } else {
-            datagrid->RemoveAttribute("style");
-        }
-        if (pass_code_ta != nullptr) {
-            pass_code_ta->SetAttribute("data-pass", Rml::String(name.c_str()));
-            pass_code_ta->AddEventListener(Rml::EventId::Change, &pass_code_change_listener);
-            auto code = resolve_pass_code(renderpass);
-            replace_all(code, "\\n", "\n");
-            pass_code_ta->SetValue(Rml::String(code.c_str()));
-            set_code_stats_for_textarea(pass_code_ta);
-        }
         if (!is_common) {
-            // buffer_panel.rml：每通道一列后接 buffer_ch_spacer，故 0→0、1→2、2→4、3→6
-            for (auto channel_i = 0; channel_i < 4; ++channel_i) {
-                auto *datagrid_column = datagrid_header->GetChild(channel_i * 2);
-                auto *ichannel = datagrid_column->GetChild(0);
-                auto *ichannel_label = datagrid_column->GetChild(1);
-                auto *ichannel_label_settings = ichannel_label->GetChild(1);
-
-                auto *ichannel_img = ichannel->GetChild(0);
-                auto *ichannel_sampler_menu = ichannel->GetChild(1);
-                auto *ichannel_close = ichannel->GetChild(2);
-
-                bool has_input = false;
-
-                for (auto &input : inputs) {
-                    if (input["channel"] == channel_i) {
-                        auto path = std::string{};
-                        if (input.contains("filepath")) {
-                            path = input["filepath"];
-                        } else if (input.contains("src")) {
-                            path = input["src"];
-                        } else {
-                            // ?
-                            continue;
-                        }
-                        replace_all(path, "/media/a/", "media/images/");
-
-                        auto input_type = std::string{};
-                        if (input.contains("type")) {
-                            input_type = input["type"];
-                        } else if (input.contains("ctype")) {
-                            input_type = input["ctype"];
-                        } else {
-                            // ?
-                            continue;
-                        }
-
-                        if (std::filesystem::exists(path)) {
-                            ichannel_img->SetAttribute("src", fmt::format("../../{}", path));
-                            has_input = true;
-                        } else if (input_type == "keyboard") {
-                            ichannel_img->SetAttribute("src", "../../media/icons/keyboard.png");
-                            has_input = true;
-                        } else if (input_type == "buffer") {
-                            auto buffer_index = 0;
-                            for (auto &input_renderpass : renderpasses) {
-                                if (input_renderpass["type"] == "buffer") {
-                                    if (input_renderpass["outputs"][0]["id"] == input["id"]) {
-                                        break;
-                                    }
-                                    ++buffer_index;
-                                }
-                            }
-
-                            ichannel_img->SetAttribute("src", fmt::format("../../media/icons/buffer0{}.png", buffer_index));
-                            has_input = true;
-                        } else if (input_type == "cubemap") {
-                            ichannel_img->SetAttribute("src", "../../media/icons/cubemap00.png");
-                            has_input = true;
-                        }
-
-                        if (input.contains("sampler")) {
-                            auto &sampler = input["sampler"];
-                            auto *filter_select = dynamic_cast<Rml::ElementFormControlSelect *>(ichannel_sampler_menu->GetChild(1));
-                            auto *wrap_select = dynamic_cast<Rml::ElementFormControlSelect *>(ichannel_sampler_menu->GetChild(4));
-                            auto filter = std::string{"linear"};
-                            auto wrap = std::string{"repeat"};
-                            if (sampler.contains("filter")) {
-                                filter = std::string(sampler["filter"]);
-                            }
-                            if (sampler.contains("wrap")) {
-                                wrap = std::string(sampler["wrap"]);
-                            }
-                            filter_select->SetValue(filter);
-                            wrap_select->SetValue(wrap);
-                        }
-                    }
-                }
-
-                if (has_input) {
-                    ichannel_img->SetAttribute("style", "display: inline-block; image-color: #ffffff;");
-                    ichannel_close->SetAttribute("style", "display: inline-block;");
-                    ichannel_sampler_menu->SetAttribute("style", "display: none;");
-                    ichannel_label_settings->SetAttribute("style", "display: block;");
-                } else {
-                    ichannel_img->SetAttribute("style", "display: inline-block; image-color: #000000;");
-                    ichannel_img->SetAttribute("src", "");
-                    ichannel_close->SetAttribute("style", "display: none;");
-                    ichannel_sampler_menu->SetAttribute("style", "display: none;");
-                    ichannel_label_settings->SetAttribute("style", "display: none;");
-                }
-            }
+            ImGui::BeginChild("ChannelsRow", ImVec2{-1.f, channels_h}, false, body_flags);
+            draw_channels();
+            ImGui::EndChild();
         }
 
-        if (name == "Image") {
-            tabs_element->SetActiveTab(tab_index);
-        }
-
-        ++tab_index;
+        ImGui::EndChild();
     }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ui_theme::pop_buffer_panel_style(style_count);
 
-    dirty = true;
-    during_shader_load = false;
-    update_active_tab_code_stats_display();
+    draw_bpiw_modal();
+    draw_compile_error_modal();
 }

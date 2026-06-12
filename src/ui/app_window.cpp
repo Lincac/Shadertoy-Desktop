@@ -1,7 +1,12 @@
 #include <ui/app_window.hpp>
+#include <ui/layout.hpp>
+
 #include <app/resources.hpp>
 
 #include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+
 #include <daxa/c/core.h>
 
 #if defined(_WIN32)
@@ -11,6 +16,7 @@
 #endif
 #include <GLFW/glfw3native.h>
 
+#define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 auto get_native_handle(GLFWwindow *glfw_window_ptr) -> daxa::NativeWindowHandle {
@@ -42,12 +48,18 @@ namespace {
 
 AppWindow::AppWindow(daxa::Device device, daxa_i32vec2 size)
     : glfw_window{create(size), &glfwDestroyWindow}, size{size} {
+    layout.window_w = static_cast<float>(size.x);
+    layout.window_h = static_cast<float>(size.y);
+
     glfwSetWindowUserPointer(this->glfw_window.get(), this);
+
     glfwSetWindowSizeCallback(
         this->glfw_window.get(),
         [](GLFWwindow *glfw_window, int width, int height) {
             auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
             self.size = {width, height};
+            self.layout.window_w = static_cast<float>(width);
+            self.layout.window_h = static_cast<float>(height);
             self.swapchain.resize();
             if (self.on_resize) {
                 self.on_resize();
@@ -65,48 +77,14 @@ AppWindow::AppWindow(daxa::Device device, daxa_i32vec2 size)
 
     glfwSetKeyCallback(
         this->glfw_window.get(),
-        [](GLFWwindow *glfw_window, int glfw_key, int /*scancode*/, int glfw_action, int glfw_mods) {
+        [](GLFWwindow *glfw_window, int glfw_key, int scancode, int glfw_action, int glfw_mods) {
+            ImGui_ImplGlfw_KeyCallback(glfw_window, glfw_key, scancode, glfw_action, glfw_mods);
             auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            if (context == nullptr) {
-                return;
+            bool forward = true;
+            if (self.on_global_key) {
+                forward = self.on_global_key(glfw_key, glfw_action, glfw_mods);
             }
-
-            // Store the active modifiers for later because GLFW doesn't provide them in the callbacks to the mouse input events.
-            self.glfw_active_modifiers = glfw_mods;
-
-            // Override the default key event callback to add global shortcuts for the samples.
-            RmlKeyDownCallback &key_down_callback = self.key_down_callback;
-            bool still_valid = true;
-
-            switch (glfw_action) {
-            case GLFW_PRESS:
-            case GLFW_REPEAT: {
-                const Rml::Input::KeyIdentifier key = RmlGLFW::ConvertKey(glfw_key);
-                const int key_modifier = RmlGLFW::ConvertKeyModifiers(glfw_mods);
-                float dp_ratio = 1.f;
-                glfwGetWindowContentScale(glfw_window, &dp_ratio, nullptr);
-
-                // See if we have any global shortcuts that take priority over the context.
-                if (key_down_callback && !key_down_callback(context, key, key_modifier, glfw_action, dp_ratio, true)) {
-                    break;
-                }
-                // Otherwise, hand the event over to the context by calling the input handler as normal.
-                still_valid = RmlGLFW::ProcessKeyCallback(context, glfw_key, glfw_action, glfw_mods);
-                if (!still_valid) {
-                    break;
-                }
-                // The key was not consumed by the context either, try keyboard shortcuts of lower priority.
-                if (key_down_callback && !key_down_callback(context, key, key_modifier, glfw_action, dp_ratio, false)) {
-                    break;
-                }
-            } break;
-            case GLFW_RELEASE:
-                RmlGLFW::ProcessKeyCallback(context, glfw_key, glfw_action, glfw_mods);
-                break;
-            }
-
-            if (still_valid && self.on_key) {
+            if (forward && self.should_forward_viewport_input() && self.on_key) {
                 self.on_key(glfw_key, glfw_action);
             }
         });
@@ -114,27 +92,21 @@ AppWindow::AppWindow(daxa::Device device, daxa_i32vec2 size)
     glfwSetCharCallback(
         this->glfw_window.get(),
         [](GLFWwindow *glfw_window, unsigned int codepoint) {
-            auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            RmlGLFW::ProcessCharCallback(context, codepoint);
+            ImGui_ImplGlfw_CharCallback(glfw_window, codepoint);
         });
 
     glfwSetCursorEnterCallback(
         this->glfw_window.get(),
         [](GLFWwindow *glfw_window, int entered) {
-            auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            RmlGLFW::ProcessCursorEnterCallback(context, entered);
+            ImGui_ImplGlfw_CursorEnterCallback(glfw_window, entered);
         });
 
-    // Mouse input
     glfwSetCursorPosCallback(
         this->glfw_window.get(),
         [](GLFWwindow *glfw_window, double xpos, double ypos) {
+            ImGui_ImplGlfw_CursorPosCallback(glfw_window, xpos, ypos);
             auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            bool still_valid = RmlGLFW::ProcessCursorPosCallback(context, glfw_window, xpos, ypos, self.glfw_active_modifiers);
-            if (still_valid && self.on_mouse_move) {
+            if (self.should_forward_viewport_input() && self.on_mouse_move) {
                 self.on_mouse_move(static_cast<float>(xpos), static_cast<float>(ypos));
             }
         });
@@ -142,11 +114,9 @@ AppWindow::AppWindow(daxa::Device device, daxa_i32vec2 size)
     glfwSetMouseButtonCallback(
         this->glfw_window.get(),
         [](GLFWwindow *glfw_window, int button, int action, int mods) {
+            ImGui_ImplGlfw_MouseButtonCallback(glfw_window, button, action, mods);
             auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            self.glfw_active_modifiers = mods;
-            bool still_valid = RmlGLFW::ProcessMouseButtonCallback(context, button, action, mods);
-            if (still_valid && self.on_mouse_button) {
+            if (self.should_forward_viewport_input() && self.on_mouse_button) {
                 self.on_mouse_button(button, action);
             }
         });
@@ -154,28 +124,12 @@ AppWindow::AppWindow(daxa::Device device, daxa_i32vec2 size)
     glfwSetScrollCallback(
         this->glfw_window.get(),
         [](GLFWwindow *glfw_window, double xoffset, double yoffset) {
-            auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            bool still_valid = RmlGLFW::ProcessScrollCallback(context, yoffset, self.glfw_active_modifiers);
-            if (still_valid && self.on_mouse_scroll) {
-                self.on_mouse_scroll(static_cast<float>(xoffset), static_cast<float>(yoffset));
-            }
+            ImGui_ImplGlfw_ScrollCallback(glfw_window, xoffset, yoffset);
         });
 
     glfwSetFramebufferSizeCallback(
         this->glfw_window.get(),
-        [](GLFWwindow *glfw_window, int width, int height) {
-            auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            RmlGLFW::ProcessFramebufferSizeCallback(context, width, height);
-        });
-
-    glfwSetWindowContentScaleCallback(
-        this->glfw_window.get(),
-        [](GLFWwindow *glfw_window, float xscale, float /*yscale*/) {
-            auto &self = *reinterpret_cast<AppWindow *>(glfwGetWindowUserPointer(glfw_window));
-            auto *context = self.rml_context;
-            RmlGLFW::ProcessContentScaleCallback(context, xscale);
+        [](GLFWwindow * /*glfw_window*/, int /*width*/, int /*height*/) {
         });
 
     glfwSetDropCallback(
@@ -205,30 +159,53 @@ AppWindow::AppWindow(daxa::Device device, daxa_i32vec2 size)
             }
         },
         .present_mode = daxa::PresentMode::FIFO,
-        .image_usage = daxa::ImageUsageFlagBits::TRANSFER_DST,
+        .image_usage = daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::COLOR_ATTACHMENT,
         .max_allowed_frames_in_flight = 1,
         .name = "AppWindowSwapchain",
     });
 }
 
 void AppWindow::update() {
-    glfwSetWindowUserPointer(this->glfw_window.get(), this);
     glfwPollEvents();
 }
 
 void AppWindow::set_fullscreen(bool is_fullscreen) {
+    layout_fullscreen = is_fullscreen;
     auto *monitor = glfwGetPrimaryMonitor();
     if (is_fullscreen) {
         GLFWvidmode const *mode = glfwGetVideoMode(monitor);
         glfwGetWindowPos(glfw_window.get(), &fullscreen_cache.pos.x, &fullscreen_cache.pos.y);
         fullscreen_cache.size = size;
         glfwSetWindowMonitor(glfw_window.get(), monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        size = {mode->width, mode->height};
     } else {
         glfwSetWindowMonitor(glfw_window.get(), nullptr, fullscreen_cache.pos.x, fullscreen_cache.pos.y, fullscreen_cache.size.x, fullscreen_cache.size.y, GLFW_DONT_CARE);
+        size = fullscreen_cache.size;
+    }
+    sync_layout_from_window();
+    swapchain.resize();
+    if (on_resize) {
+        on_resize();
     }
 }
 
 void AppWindow::set_vsync(bool enabled) {
     auto present_mode = enabled ? daxa::PresentMode::FIFO : daxa::PresentMode::IMMEDIATE;
     swapchain.set_present_mode(present_mode);
+}
+
+auto AppWindow::should_forward_viewport_input() const -> bool {
+    if (layout_fullscreen) {
+        return true;
+    }
+    auto const &io = ImGui::GetIO();
+    if (io.WantCaptureMouse || io.WantCaptureKeyboard) {
+        return false;
+    }
+    return layout.point_in_viewport(io.MousePos.x, io.MousePos.y);
+}
+
+void AppWindow::sync_layout_from_window() {
+    layout.window_w = static_cast<float>(size.x);
+    layout.window_h = static_cast<float>(size.y);
 }

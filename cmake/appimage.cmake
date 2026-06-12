@@ -67,8 +67,7 @@ install(
         FILES_MATCHING
         PATTERN "*.glsl"
         PATTERN "*.inl"
-        PATTERN "*.rcss"
-        PATTERN "*.rml"
+        PATTERN "rml" EXCLUDE
 )
 install(FILES "${daxa_DIR}/../../include/daxa/daxa.inl" "${daxa_DIR}/../../include/daxa/daxa.glsl"
         DESTINATION "${APPDIR_SHARE_PATH}/src/daxa"

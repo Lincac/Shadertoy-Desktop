@@ -16,11 +16,25 @@
             }
         },
         {
-            "name": "defaults-windows",
+            "name": "defaults-windows-ninja",
             "hidden": true,
             "inherits": [
                 "defaults"
             ],
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "defaults-windows",
+            "hidden": true,
+            "inherits": [
+                "defaults-windows-ninja"
+            ],
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
             "condition": {
                 "type": "equals",
                 "lhs": "${hostSystemName}",
@@ -85,8 +99,15 @@
             "toolchainFile": "${sourceDir}/cmake/toolchains/cl-x86_64-windows-msvc.cmake"
         },
         {
+            "name": "ninja-x86_64-windows-msvc",
+            "displayName": "Ninja x86_64 Windows (MSVC ABI, requires Ninja)",
+            "inherits": [
+                "defaults-windows-ninja"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/cl-x86_64-windows-msvc.cmake"
+        },
+        {
             "name": "vs-x86_64-windows-msvc",
-            "generator": "Visual Studio 17 2022",
             "displayName": "Visual Studio x86_64 Windows (MSVC ABI)",
             "inherits": [
                 "defaults-windows"
@@ -214,6 +235,18 @@
             "displayName": "Windows Clangd",
             "configurePreset": "windows-clangd",
             "configuration": "Debug"
+        },
+        {
+            "name": "vs-x86_64-windows-msvc-debug",
+            "displayName": "Visual Studio x86_64 Windows Debug",
+            "configurePreset": "vs-x86_64-windows-msvc",
+            "configuration": "Debug"
+        },
+        {
+            "name": "vs-x86_64-windows-msvc-release",
+            "displayName": "Visual Studio x86_64 Windows Release",
+            "configurePreset": "vs-x86_64-windows-msvc",
+            "configuration": "Release"
         }
     ],
     "testPresets": [

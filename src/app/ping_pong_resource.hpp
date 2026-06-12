@@ -98,6 +98,17 @@ struct PingPongResource {
     void swap() {
         task_resources.output_resource.swap_images(task_resources.history_resource);
     }
+
+    void destroy_gpu_resources(daxa::Device &device) {
+        if (!resources.resource_a.is_empty()) {
+            Impl::destroy(device, resources.resource_a);
+            Impl::destroy(device, resources.resource_b);
+            resources.resource_a = {};
+            resources.resource_b = {};
+            resources.device = {};
+        }
+        task_resources = {};
+    }
 };
 
 using PingPongImage = PingPongResource<PingPongImage_impl>;

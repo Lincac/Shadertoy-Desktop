@@ -248,13 +248,57 @@ Viewport::Viewport(daxa::Device a_daxa_device)
 }
 
 Viewport::~Viewport() {
+    shutdown();
+}
+
+void Viewport::shutdown() {
+    if (gpu_shutdown_done) {
+        return;
+    }
+    gpu_shutdown_done = true;
+
+    for (auto &pass : buffer_passes) {
+        if (pass.pipeline) {
+            pipeline_manager.remove_raster_pipeline(pass.pipeline);
+            pass.pipeline.reset();
+        }
+        pass.buffer.destroy_gpu_resources(daxa_device);
+    }
+    for (auto &pass : cube_passes) {
+        if (pass.pipeline) {
+            pipeline_manager.remove_raster_pipeline(pass.pipeline);
+            pass.pipeline.reset();
+        }
+        pass.buffer.destroy_gpu_resources(daxa_device);
+    }
+    if (image_pass.pipeline) {
+        pipeline_manager.remove_raster_pipeline(image_pass.pipeline);
+        image_pass.pipeline.reset();
+    }
+    image_pass.buffer.destroy_gpu_resources(daxa_device);
+
+    buffer_passes.clear();
+    cube_passes.clear();
+    image_pass = ShaderBufferPass{};
+
+    for (auto &[path, elem] : loaded_textures) {
+        if (!elem.first.is_empty()) {
+            daxa_device.destroy_image(elem.first);
+        }
+        (void)path;
+    }
+    loaded_textures.clear();
+    task_textures.clear();
+
     for (auto &sampler : samplers) {
-        daxa_device.destroy_sampler(sampler);
+        if (!sampler.is_empty()) {
+            daxa_device.destroy_sampler(sampler);
+            sampler = {};
+        }
     }
-    for (auto &[str, elem] : loaded_textures) {
-        auto &[image_id, idx] = elem;
-        daxa_device.destroy_image(image_id);
-    }
+
+    pipeline_manager = {};
+    daxa_device = {};
 }
 
 void Viewport::update() {
@@ -708,6 +752,7 @@ void Viewport::on_toggle_pause(bool is_paused) {
     if (is_paused) {
         pause_time = Clock::now();
         is_reset = false;
+        gpu_input.TimeDelta = 0.f;
     } else if (is_reset) {
         auto now = Clock::now();
         start = now;
@@ -944,6 +989,7 @@ auto Viewport::load_volume_texture(std::string id) -> std::pair<daxa::ImageId, s
 
 void Viewport::load_shadertoy_json(nlohmann::json json) {
     this->load_failed = false;
+    this->last_compile_error.clear();
     auto &renderpasses = json["renderpass"];
 
     auto id_map = std::unordered_map<std::string, ShaderPassInput>{};
@@ -1160,7 +1206,7 @@ void Viewport::load_shadertoy_json(nlohmann::json json) {
 
         auto pass_file = daxa::VirtualFileInfo{
             .name = pipeline_name,
-            .contents = code,
+            .contents = code.is_string() ? code.get<std::string>() : std::string{},
         };
 
         replace_all(pass_file.contents, "\\n", "\n");
@@ -1194,18 +1240,44 @@ void Viewport::load_shadertoy_json(nlohmann::json json) {
             .push_constant_size = sizeof(ShaderToyPush),
             .name = pipeline_name,
         });
-        if (compile_result.is_err() || !compile_result.value()->is_valid()) {
-            core::log_error(pipeline_name + ": " + compile_result.message());
-            this->load_failed = true;
-            return;
+
+        std::shared_ptr<daxa::RasterPipeline> pipeline_ptr;
+        if (!compile_result.is_err() && compile_result.value()->is_valid()) {
+            pipeline_ptr = compile_result.value();
+        } else {
+            auto const err = pipeline_name + ": " + compile_result.message();
+            core::log_error(err);
+            last_compile_error += err + "\n";
+            load_failed = true;
+            if (pass_type == "image") {
+                pipeline_ptr = image_pass.pipeline;
+            } else if (pass_type == "buffer") {
+                for (auto const &old_pass : buffer_passes) {
+                    if (old_pass.name == pipeline_name) {
+                        pipeline_ptr = old_pass.pipeline;
+                        break;
+                    }
+                }
+            } else if (pass_type == "cubemap") {
+                for (auto const &old_pass : cube_passes) {
+                    if (old_pass.name == pipeline_name) {
+                        pipeline_ptr = old_pass.pipeline;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!pipeline_ptr || !pipeline_ptr->is_valid()) {
+            continue;
         }
 
         if (pass_type == "image") {
-            new_image_pass = {name, temp_inputs, compile_result.value()};
+            new_image_pass = {name, temp_inputs, pipeline_ptr};
         } else if (pass_type == "buffer") {
-            new_buffer_passes.emplace_back(name, temp_inputs, compile_result.value());
+            new_buffer_passes.emplace_back(name, temp_inputs, pipeline_ptr);
         } else if (pass_type == "cubemap") {
-            new_cube_passes.emplace_back(name, temp_inputs, compile_result.value());
+            new_cube_passes.emplace_back(name, temp_inputs, pipeline_ptr);
         }
     }
 
@@ -1239,7 +1311,7 @@ void Viewport::load_shadertoy_json(nlohmann::json json) {
     for (auto &pass : buffer_passes)
         if (pass.pipeline)
             pipeline_manager.remove_raster_pipeline(pass.pipeline);
-    for (auto &pass : new_cube_passes)
+    for (auto &pass : cube_passes)
         if (pass.pipeline)
             pipeline_manager.remove_raster_pipeline(pass.pipeline);
     if (image_pass.pipeline)
@@ -1247,7 +1319,9 @@ void Viewport::load_shadertoy_json(nlohmann::json json) {
 
     buffer_passes = std::move(new_buffer_passes);
     cube_passes = std::move(new_cube_passes);
-    image_pass = std::move(new_image_pass);
+    if (new_image_pass.pipeline) {
+        image_pass = std::move(new_image_pass);
+    }
 
     first_record_after_load = true;
 
